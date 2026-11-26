@@ -34,6 +34,7 @@
 
 | Method & Path | 权限 | 说明 |
 | :--- | :--- | :--- |
+| `GET /api/v1/auth/providers` | 公开 | 返回启用的 OIDC 登录入口信息（`oidc_enabled`、`provider_name`、`login_url`），供分栏登录页渲染 OIDC 跳转按钮 |
 | `GET /api/v1/auth/oidc/login` | 公开 | 发起 OIDC Authorization Code + PKCE 登录（302 重定向到 Logto 等 IdP） |
 | `GET /api/v1/auth/oidc/callback` | 公开 | 处理 OIDC 回调，完成 JIT 建档与 Session 签发，302 跳转至面板 |
 | `POST /api/v1/auth/logout` | 已登录 | 吊销本机 `user_sessions` 并返回可选的 IdP RP-Initiated Logout URL |
@@ -346,7 +347,7 @@ frontend/
 
 | 路由路径 | 允许角色 | 交互行为与安全保障 |
 | :--- | :--- | :--- |
-| `/sign-in` | 访客 | 展示 Æthergate 品牌标识与「使用 Logto / OIDC 登录或注册」按钮（无本地密码表单） |
+| `/sign-in` | 访客 | 采用 `shadcn-admin` 分栏式（Split-Screen）登录页布局：左侧展示 Æthergate 品牌标识、系统架构摘要与节点流量概览卡片，右侧展示「使用 OIDC / Logto 登录或注册」主跳转按钮及安全提示（无本地密码表单），点击后直接跳转 `/api/v1/auth/oidc/login` |
 | `/` & `/portal` | `user` / `admin` | 若为 `user` 且 `proxy_enabled === false`，渲染 **`PendingApprovalView`**（展示账号信息、OIDC 绑定邮箱、「您的账号已注册成功，当前仅限访问面板，代理权限与可用节点需由管理员审核开通」提示），完全隐藏订阅链接与节点详情；若 `proxy_enabled === true`，渲染节点卡片、四协议二维码、个人实时带宽与**按自然月统计的个人及分节点流量明细**（顶部内置月份选择器，每月 1 号 00:00 自动归零开启新月，支持切换历史月份） |
 | `/admin/dashboard` | 仅 `admin` | 管理员全局驾驶舱：全集群实时总上/下行带宽流式双折线图、在线节点健康矩阵、待审批新用户快速通道、本月（1 号起算，可切历史月份）流量与 Top 用户/节点榜 |
 | `/admin/nodes` & `/admin/nodes/$nodeId` | 仅 `admin` | 节点列表 + 详情多 Tab（含月份选择器）：**[运行态与实时带宽]**（含该节点下所有用户的瞬时带宽与月度流量表 + 踢人操作）、**[四协议入站配置]**、**[协议流量占比]**、**[编译配置预览与实时日志]** |
