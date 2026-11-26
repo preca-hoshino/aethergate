@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/aethergate-protocol",
+    "crates/aethergate-server",
+    "crates/aethergate-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0"
+repository = "https://github.com/preca-hoshino/aethergate"
+authors = ["Æthergate Contributors"]
+
+[workspace.dependencies]
+aes-gcm = "0.10"
+anyhow = "1.0"
+arc-swap = "1.7"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+bytes = "1.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+chrono-tz = "0.10"
+clap = { version = "4.5", features = ["derive"] }
+dashmap = "6.1"
+futures = "0.3"
+hex = "0.4"
+hmac = "0.12"
+mime_guess = "2.0"
+prost = "0.13"
+protox = "0.7"
+rand = "0.9"
+rcgen = "0.13"
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots", "acl", "script"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-tls-native-roots", "stream", "json", "http2", "gzip", "brotli"] }
+ring = "0.17"
+rust-embed = { version = "8.7", features = ["include-exclude", "compression"] }
+rustls = { version = "0.23", default-features = false }
+rustls-native-certs = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json", "macros", "migrate"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+thiserror = "2.0"
+tokio = { version = "1.45", features = ["full"] }
+tokio-stream = "0.1"
+toml = "0.8"
+tonic = "0.12"
+tonic-build = "0.12"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-br", "compression-gzip"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+urlencoding = "2.1"
+uuid = { version = "1.16", features = ["v4", "v7", "serde"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unused = { level = "deny", priority = -1 }
+rust_2024_compatibility = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+missing_docs_in_private_items = "deny"
+multiple_crate_versions = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false

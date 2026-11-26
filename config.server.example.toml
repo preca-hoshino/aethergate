@@ -1,0 +1,31 @@
+[server]
+bind = "0.0.0.0:8080"
+public_base_url = "https://panel.example.com"
+# 32-byte hex AES-256-GCM master key (or set AETHERGATE_MASTER_KEY_HEX)
+master_key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[database]
+url = "postgres://aethergate:password@127.0.0.1:5432/aethergate"
+max_connections = 16
+
+[stats]
+# Defines natural month 1st 00:00:00 reset boundary
+timezone = "Asia/Shanghai"
+eco_interval_sec = 30
+realtime_interval_sec = 5
+heartbeat_timeout_sec = 180
+
+[oidc]
+issuer_url = "https://your-tenant.logto.app/oidc"
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+# In read-only container mode, prefer:
+# client_secret_file = "/config/secrets/oidc-client-secret"
+bootstrap_admin_emails = ["admin@example.com"]
+admin_role_claim = "roles"
+admin_role_value = "aethergate:admin"
+
+[security]
+require_open_api_hmac = false
+cookie_secure = true
+session_ttl_hours = 168

@@ -1,0 +1,21 @@
+[control_plane]
+base_url = "https://panel.example.com"
+node_id = "00000000-0000-0000-0000-000000000000"
+api_token = "ag_node_live_replace_me"
+# Optional in read-only containers:
+# api_token_file = "/etc/aethergate/secrets/api-token"
+hmac_secret = "ag_hmac_replace_me"
+# hmac_secret_file = "/etc/aethergate/secrets/hmac-secret"
+enable_hmac = true
+request_timeout_sec = 10
+
+[singbox]
+binary_path = "/usr/local/bin/sing-box"
+config_dir = "/var/lib/aethergate/configs"
+v2ray_api_listen = "127.0.0.1:10085"
+clash_api_listen = "127.0.0.1:19090"
+
+[telemetry]
+sample_interval_sec = 2
+wal_dir = "/var/lib/aethergate/wal"
+wal_max_size_mb = 50

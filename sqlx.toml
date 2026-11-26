@@ -1,0 +1,4 @@
+# SQLx 0.8 workspace configuration
+[migrate]
+# Migrations live inside crates/aethergate-server/migrations
+migrations-dir = "crates/aethergate-server/migrations"

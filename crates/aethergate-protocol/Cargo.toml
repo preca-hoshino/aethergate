@@ -1,0 +1,23 @@
+[package]
+name = "aethergate-protocol"
+description = "Shared Open API DTOs, 4-protocol sing-box 1.12+ compiler, and HMAC auth for Aethergate"
+readme = "../../docs/README.md"
+keywords = ["sing-box", "proxy", "hysteria2", "telemetry"]
+categories = ["network-programming", "web-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true
