@@ -14,8 +14,8 @@ pub use compiler::{
 };
 pub use hmac::{
     DEFAULT_MAX_TIMESTAMP_SKEW_SECS, HEADER_NODE_ID, HEADER_NONCE, HEADER_SIGNATURE,
-    HEADER_TIMESTAMP, HmacAuthError, build_canonical_string, sha256_hex, sign_request,
-    verify_request,
+    HEADER_TIMESTAMP, HmacAuthError, VerifyRequestParams, build_canonical_string, sha256_hex,
+    sign_request, verify_request,
 };
 pub use open_api::{
     ClientAuthRequest, ClientAuthResponse, CommandAckRequest, ConfigFormat, NodeAuthVerifyResponse,
