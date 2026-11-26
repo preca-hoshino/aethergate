@@ -1,4 +1,10 @@
 //! 4-protocol subscription generator (`GET /sub/{token}`) and portal URI builder.
+//!
+//! Supports `format=uri` (base64 lines, default), `format=singbox` (`sing-box` JSON outbounds),
+//! and `format=mihomo` / `format=clash` (full Clash Meta / Mihomo YAML with 2-level node/protocol groups).
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -14,10 +20,110 @@ use aethergate_protocol::{InboundProtocolConfig, ProtocolType, TlsProfile};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
+/// Customizable Mihomo / Clash Meta template blocks stored in `panel_settings`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MihomoTemplateSettings {
+    /// YAML block for top-level settings + `dns:` section.
+    pub header_and_dns_yaml: String,
+    /// YAML block for `rules:` section.
+    pub rules_yaml: String,
+}
+
+impl Default for MihomoTemplateSettings {
+    fn default() -> Self {
+        Self {
+            header_and_dns_yaml: DEFAULT_MIHOMO_HEADER_AND_DNS.to_owned(),
+            rules_yaml: DEFAULT_MIHOMO_RULES.to_owned(),
+        }
+    }
+}
+
+/// Default Mihomo top-level controller, ports, and Fake-IP DNS configuration.
+pub const DEFAULT_MIHOMO_HEADER_AND_DNS: &str = r"external-controller: 127.0.0.1:9090
+
+port: 7890
+socks-port: 7891
+allow-lan: true
+mode: rule
+log-level: info
+ipv6: true
+
+geodata-mode: false
+geo-auto-update: false
+
+dns:
+  enable: true
+  listen: ':53'
+  enhanced-mode: 'fake-ip'
+  fake-ip-range: '198.18.0.1/16'
+  fake-ip-range6: 'fdfe:dcba:9876::1/64'
+  fake-ip-filter-mode: 'blacklist'
+  prefer-h3: true
+  respect-rules: true
+  use-hosts: false
+  use-system-hosts: false
+  ipv6: true
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - '*.arpa'
+    - 'time.*.com'
+    - 'ntp.*.com'
+    - '+.market.xiaomi.com'
+    - 'localhost.ptlogin2.qq.com'
+    - '*.msftncsi.com'
+    - 'www.msftconnecttest.com'
+  default-nameserver:
+    - 'system'
+    - '223.6.6.6'
+    - '8.8.8.8'
+    - '2400:3200::1'
+    - '2001:4860:4860::8888'
+  nameserver:
+    - 'https://doh.pub/dns-query'
+    - 'https://dns.alidns.com/dns-query'
+  direct-nameserver-follow-policy: true
+  fallback-filter:
+    geoip: true
+    geoip-code: 'CN'
+    ipcidr:
+      - '240.0.0.0/4'
+      - '0.0.0.0/32'
+      - '100.64.0.0/10'
+      - 'fd7a:115c:a1e0::/48'
+  fallback:
+    - 'https://dns.google/dns-query'
+    - 'https://1.1.1.1/dns-query'
+  proxy-server-nameserver:
+    - 'https://doh.pub/dns-query'
+    - 'https://dns.alidns.com/dns-query'
+    - 'tls://223.5.5.5'";
+
+/// Default Mihomo routing rules.
+pub const DEFAULT_MIHOMO_RULES: &str = r"rules:
+  - DOMAIN-SUFFIX,ts.net,DIRECT
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR6,fd7a:115c:a1e0::/48,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,224.0.0.0/4,DIRECT,no-resolve
+  - DOMAIN-SUFFIX,localhost,DIRECT
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - GEOSITE,cn,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY";
+
 /// Query parameters for `GET /sub/{token}`.
 #[derive(Debug, Deserialize)]
 pub struct SubscriptionQuery {
-    /// Output format: `"uri"` (base64 lines, default) or `"singbox"` (JSON outbounds).
+    /// Output format: `"uri"` (base64 lines, default), `"singbox"`, or `"mihomo"`/`"clash"`.
     #[serde(default = "default_sub_format")]
     pub format: String,
 }
@@ -295,6 +401,188 @@ fn render_singbox_outbound(
     }
 }
 
+/// Loads the admin-configured Mihomo template from `panel_settings`, falling back to defaults.
+///
+/// # Errors
+/// Returns a database error if querying `panel_settings` fails.
+pub async fn load_mihomo_template(state: &AppState) -> AppResult<MihomoTemplateSettings> {
+    let row = sqlx::query_scalar::<_, Value>(
+        "SELECT value FROM panel_settings WHERE key = 'mihomo_template'",
+    )
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(val) = row
+        && let Ok(parsed) = serde_json::from_value::<MihomoTemplateSettings>(val)
+    {
+        return Ok(parsed);
+    }
+    Ok(MihomoTemplateSettings::default())
+}
+
+/// Escapes double quotes in YAML double-quoted strings.
+fn yaml_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Appends one Mihomo proxy YAML entry and returns `(node_name, proxy_name)` when valid.
+fn append_mihomo_proxy_entry(
+    out: &mut String,
+    row: &AuthorizedInboundRow,
+    proxy_uuid: Uuid,
+    proxy_password: &str,
+) -> Option<String> {
+    let tls = serde_json::from_value::<TlsProfile>(row.tls_profile_json.clone()).ok()?;
+    let cfg =
+        serde_json::from_value::<InboundProtocolConfig>(row.protocol_config_json.clone()).ok()?;
+    let skip_cert = tls.mode == "self_signed";
+    let sni = if tls.server_name.is_empty() {
+        &row.host
+    } else {
+        &tls.server_name
+    };
+
+    let proxy_name = match cfg {
+        InboundProtocolConfig::VlessReality { .. } => {
+            format!("VLESS-Reality ({})", row.node_name)
+        }
+        InboundProtocolConfig::Hysteria2 { .. } => format!("Hysteria2 ({})", row.node_name),
+        InboundProtocolConfig::Tuic { .. } => format!("TUIC ({})", row.node_name),
+        InboundProtocolConfig::Anytls { .. } => format!("AnyTLS ({})", row.node_name),
+    };
+
+    match cfg {
+        InboundProtocolConfig::VlessReality {
+            server_name,
+            public_key,
+            short_ids,
+            flow,
+            fingerprint,
+            ..
+        } => {
+            let sid = short_ids.first().map_or("", String::as_str);
+            let _ = writeln!(
+                out,
+                "  - name: {}\n    type: vless\n    server: {}\n    port: {}\n    uuid: {}\n    flow: {}\n    tls: true\n    udp: true\n    servername: {}\n    reality: true\n    reality-opts:\n      public-key: {}\n      short-id: {}\n    client-fingerprint: {}\n",
+                yaml_quote(&proxy_name),
+                row.host,
+                row.listen_port,
+                proxy_uuid,
+                flow,
+                server_name,
+                public_key,
+                sid,
+                fingerprint,
+            );
+        }
+        InboundProtocolConfig::Hysteria2 { obfs, .. } => {
+            let _ = writeln!(
+                out,
+                "  - name: {}\n    type: hysteria2\n    server: {}\n    port: {}",
+                yaml_quote(&proxy_name),
+                row.host,
+                row.listen_port,
+            );
+            if let Some(ports) = row.port_range.as_deref().filter(|s| !s.is_empty()) {
+                let _ = writeln!(out, "    ports: {ports}");
+            }
+            let _ = writeln!(
+                out,
+                "    password: {}\n    tls: true\n    sni: {}\n    skip-cert-verify: {skip_cert}",
+                yaml_quote(proxy_password),
+                sni,
+            );
+            if let Some(obfs_cfg) = obfs {
+                let _ = writeln!(
+                    out,
+                    "    obfs: {}\n    obfs-password: {}",
+                    obfs_cfg.obfs_type,
+                    yaml_quote(&obfs_cfg.password),
+                );
+            }
+            out.push('\n');
+        }
+        InboundProtocolConfig::Tuic {
+            congestion_control,
+            udp_relay_mode,
+            alpn,
+            ..
+        } => {
+            let alpn_list = alpn.join(", ");
+            let _ = writeln!(
+                out,
+                "  - name: {}\n    type: tuic\n    server: {}\n    port: {}\n    uuid: {}\n    password: {}\n    alpn: [{alpn_list}]\n    congestion-controller: {congestion_control}\n    udp-relay-mode: {udp_relay_mode}\n    sni: {}\n    udp: true\n    skip-cert-verify: {skip_cert}\n",
+                yaml_quote(&proxy_name),
+                row.host,
+                row.listen_port,
+                proxy_uuid,
+                yaml_quote(proxy_password),
+                sni,
+            );
+        }
+        InboundProtocolConfig::Anytls { .. } => {
+            let _ = writeln!(
+                out,
+                "  - name: {}\n    type: anytls\n    server: {}\n    port: {}\n    password: {}\n    sni: {}\n    skip-cert-verify: {skip_cert}\n    udp: true\n",
+                yaml_quote(&proxy_name),
+                row.host,
+                row.listen_port,
+                yaml_quote(proxy_password),
+                sni,
+            );
+        }
+    }
+
+    Some(proxy_name)
+}
+
+/// Renders a complete Mihomo (Clash Meta) YAML configuration with 2-level node/protocol proxy-groups.
+#[must_use]
+pub fn render_mihomo_yaml(
+    inbounds: &[AuthorizedInboundRow],
+    proxy_uuid: Uuid,
+    proxy_password: &str,
+    template: &MihomoTemplateSettings,
+) -> String {
+    let mut out = String::new();
+    out.push_str(template.header_and_dns_yaml.trim_end());
+    out.push_str("\n\nproxies:\n");
+
+    let mut node_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in inbounds {
+        if let Some(proxy_name) =
+            append_mihomo_proxy_entry(&mut out, row, proxy_uuid, proxy_password)
+        {
+            node_groups
+                .entry(row.node_name.clone())
+                .or_default()
+                .push(proxy_name);
+        }
+    }
+
+    out.push_str("proxy-groups:\n  - name: \"PROXY\"\n    type: select\n    proxies:\n");
+    for node_name in node_groups.keys() {
+        let _ = writeln!(out, "      - {}", yaml_quote(node_name));
+    }
+    out.push_str("      - \"DIRECT\"\n\n");
+
+    for (node_name, proxy_names) in &node_groups {
+        let _ = writeln!(
+            out,
+            "  - name: {}\n    type: select\n    proxies:",
+            yaml_quote(node_name)
+        );
+        for pname in proxy_names {
+            let _ = writeln!(out, "      - {}", yaml_quote(pname));
+        }
+        out.push_str("    url: \"http://www.gstatic.com/generate_204\"\n    interval: 300\n\n");
+    }
+
+    out.push_str(template.rules_yaml.trim_end());
+    out.push('\n');
+    out
+}
+
 /// `GET /sub/{token}` - public subscription endpoint gated by `sub_token`, `panel_status`, and `proxy_enabled`.
 pub async fn get_subscription(
     State(state): State<AppState>,
@@ -316,6 +604,23 @@ pub async fn get_subscription(
     }
 
     let inbounds = load_authorized_inbounds_for_user(&state, user.id).await?;
+
+    if query.format.eq_ignore_ascii_case("mihomo") || query.format.eq_ignore_ascii_case("clash") {
+        let template = load_mihomo_template(&state).await?;
+        let yaml = render_mihomo_yaml(&inbounds, user.proxy_uuid, &user.proxy_password, &template);
+        return Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "inline; filename=\"aethergate.yaml\"",
+                ),
+            ],
+            yaml,
+        )
+            .into_response());
+    }
 
     if query.format.eq_ignore_ascii_case("singbox") {
         let outbounds: Vec<Value> = inbounds
@@ -455,5 +760,72 @@ mod tests {
                 .as_ref()
                 .is_some_and(|(p, u)| *p == ProtocolType::Anytls && u.starts_with("anytls://"))
         );
+    }
+
+    #[test]
+    fn renders_mihomo_yaml_with_node_groups() {
+        let tls = json!({
+            "mode": "self_signed",
+            "server_name": "cn-ckg-01.example.com",
+            "cert_path": "/etc/aethergate/certs/fullchain.pem",
+            "key_path": "/etc/aethergate/certs/privkey.pem"
+        });
+        let rows = vec![
+            AuthorizedInboundRow {
+                node_id: Uuid::nil(),
+                node_name: "CN-CKG-01".to_owned(),
+                host: "cn-ckg-01.example.com".to_owned(),
+                region: "CN".to_owned(),
+                tls_profile_json: tls.clone(),
+                tag: "in-vless".to_owned(),
+                listen_port: 30000,
+                port_range: None,
+                protocol_config_json: serde_json::to_value(InboundProtocolConfig::VlessReality {
+                    server_name: "ys.mihoyo.com".to_owned(),
+                    handshake_server: "ys.mihoyo.com".to_owned(),
+                    handshake_port: 443,
+                    private_key: "priv".to_owned(),
+                    public_key: "pub123".to_owned(),
+                    short_ids: vec!["ecd269cf".to_owned()],
+                    flow: "xtls-rprx-vision".to_owned(),
+                    fingerprint: "chrome".to_owned(),
+                })
+                .unwrap_or(Value::Null),
+            },
+            AuthorizedInboundRow {
+                node_id: Uuid::nil(),
+                node_name: "CN-CKG-01".to_owned(),
+                host: "cn-ckg-01.example.com".to_owned(),
+                region: "CN".to_owned(),
+                tls_profile_json: tls,
+                tag: "in-hy2".to_owned(),
+                listen_port: 30001,
+                port_range: Some("32000-32999".to_owned()),
+                protocol_config_json: serde_json::to_value(InboundProtocolConfig::Hysteria2 {
+                    up_mbps: None,
+                    down_mbps: None,
+                    ignore_client_bandwidth: false,
+                    obfs: None,
+                    masquerade: None,
+                    alpn: vec!["h3".to_owned()],
+                })
+                .unwrap_or(Value::Null),
+            },
+        ];
+
+        let yaml = render_mihomo_yaml(
+            &rows,
+            Uuid::nil(),
+            "secret-pass",
+            &MihomoTemplateSettings::default(),
+        );
+        assert!(yaml.contains("external-controller: 127.0.0.1:9090"));
+        assert!(yaml.contains("name: \"VLESS-Reality (CN-CKG-01)\""));
+        assert!(yaml.contains("name: \"Hysteria2 (CN-CKG-01)\""));
+        assert!(yaml.contains("ports: 32000-32999"));
+        assert!(yaml.contains("proxy-groups:"));
+        assert!(yaml.contains("name: \"PROXY\""));
+        assert!(yaml.contains("name: \"CN-CKG-01\""));
+        assert!(yaml.contains("rules:"));
     }
 }

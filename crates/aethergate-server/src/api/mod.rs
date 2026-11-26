@@ -96,6 +96,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/portal/subscriptions",
             get(panel::get_portal_subscriptions),
+        )
+        .route(
+            "/settings/mihomo-template",
+            get(panel::get_mihomo_template).put(panel::update_mihomo_template),
         );
 
     Router::new()

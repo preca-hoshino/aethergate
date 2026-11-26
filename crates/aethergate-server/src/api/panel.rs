@@ -1831,3 +1831,45 @@ pub async fn get_portal_subscriptions(
 
     Ok(Json(links))
 }
+
+/// `GET /api/v1/settings/mihomo-template`
+pub async fn get_mihomo_template(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+) -> AppResult<Json<crate::subscription::MihomoTemplateSettings>> {
+    let tpl = crate::subscription::load_mihomo_template(&state).await?;
+    Ok(Json(tpl))
+}
+
+/// `PUT /api/v1/settings/mihomo-template`
+pub async fn update_mihomo_template(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(tpl): Json<crate::subscription::MihomoTemplateSettings>,
+) -> AppResult<StatusCode> {
+    let val = serde_json::to_value(&tpl)
+        .map_err(|e| AppError::BadRequest(format!("invalid template JSON: {e}")))?;
+
+    sqlx::query(
+        r"
+        INSERT INTO panel_settings (key, value, updated_at)
+        VALUES ('mihomo_template', $1, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        ",
+    )
+    .bind(val)
+    .execute(&state.db)
+    .await?;
+
+    record_audit_log(
+        &state,
+        admin.id,
+        "settings.mihomo_template.update",
+        "panel_settings",
+        Some("mihomo_template"),
+        json!({}),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}

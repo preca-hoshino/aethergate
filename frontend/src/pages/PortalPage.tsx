@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Clock, Copy, QrCode, ShieldCheck } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -10,9 +11,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export function PortalPage() {
   const month = useAppStore((s) => s.selectedMonth)
+  const [subFormat, setSubFormat] = useState<'mihomo' | 'singbox' | 'uri'>('mihomo')
 
   const { data: summary, isLoading } = useQuery({
     queryKey: ['portal-summary', month],
@@ -47,6 +50,9 @@ export function PortalPage() {
       </div>
     )
   }
+
+  const formattedSubUrl =
+    subFormat === 'uri' ? summary.subscription_url : `${summary.subscription_url}?format=${subFormat}`
 
   return (
     <div className="space-y-6">
@@ -85,25 +91,41 @@ export function PortalPage() {
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <QrCode className="size-4" />
-            Universal Subscription URL
-          </CardTitle>
-          <CardDescription>Supports URI base64 (default) or `?format=singbox` JSON outbounds.</CardDescription>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <QrCode className="size-4" />
+              Universal Subscription URL
+            </CardTitle>
+            <CardDescription>
+              Full Mihomo / Clash Meta YAML (2-level node &amp; protocol groups), sing-box JSON, or Base64 URIs.
+            </CardDescription>
+          </div>
+          <Tabs
+            value={subFormat}
+            onValueChange={(v) => {
+              setSubFormat(v as typeof subFormat)
+            }}
+          >
+            <TabsList>
+              <TabsTrigger value="mihomo">Mihomo / Clash</TabsTrigger>
+              <TabsTrigger value="singbox">sing-box</TabsTrigger>
+              <TabsTrigger value="uri">Base64 URI</TabsTrigger>
+            </TabsList>
+          </Tabs>
         </CardHeader>
         <CardContent className="flex flex-col items-start gap-6 sm:flex-row sm:items-center">
           <div className="rounded-lg border bg-white p-3">
-            <QRCodeSVG value={summary.subscription_url} size={132} />
+            <QRCodeSVG value={formattedSubUrl} size={132} />
           </div>
           <div className="w-full flex-1 space-y-3">
             <div className="flex gap-2">
-              <Input readOnly value={summary.subscription_url} className="font-mono text-xs" />
+              <Input readOnly value={formattedSubUrl} className="font-mono text-xs" />
               <Button
                 variant="outline"
                 onClick={() => {
-                  void navigator.clipboard.writeText(summary.subscription_url)
-                  toast.success('Copied subscription URL')
+                  void navigator.clipboard.writeText(formattedSubUrl)
+                  toast.success(`Copied ${subFormat} subscription URL`)
                 }}
               >
                 <Copy className="size-4" />
