@@ -1,0 +1,169 @@
+name: CI & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build & Lint Frontend
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run lint
+          npm run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust Fmt, Clippy & Tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --locked
+
+  build-binaries:
+    needs: quality-gates
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: aethergate-server
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            ext: ""
+          - pkg: aethergate-server
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            ext: ""
+          - pkg: aethergate-server
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: ".exe"
+          - pkg: aethergate-server
+            target: aarch64-apple-darwin
+            os: macos-latest
+            ext: ""
+          - pkg: aethergate-agent
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            ext: ""
+          - pkg: aethergate-agent
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: matrix.pkg == 'aethergate-server'
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build Frontend for rust-embed
+        if: matrix.pkg == 'aethergate-server'
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl cross tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+      - name: Build Binary
+        run: |
+          cargo build --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
+          mkdir -p dist-bin
+          cp "target/${{ matrix.target }}/release/${{ matrix.pkg }}${{ matrix.ext }}" "dist-bin/${{ matrix.pkg }}-${{ matrix.target }}${{ matrix.ext }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}-${{ matrix.target }}
+          path: dist-bin/*
+
+  docker-images:
+    needs: quality-gates
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Smoke Test Server Scratch Container (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.server
+          load: true
+          tags: aethergate-server:test
+      - run: bash scripts/test-docker-server.sh aethergate-server:test
+      - name: Smoke Test Agent Scratch Container (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.agent
+          load: true
+          tags: aethergate-agent:test
+      - run: bash scripts/test-docker-agent.sh aethergate-agent:test
+      - name: Build & Push Multi-Arch Server Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aethergate-server:latest
+            ghcr.io/${{ github.repository_owner }}/aethergate-server:${{ github.sha }}
+      - name: Build & Push Multi-Arch Agent Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aethergate-agent:latest
+            ghcr.io/${{ github.repository_owner }}/aethergate-agent:${{ github.sha }}
+
+  release:
+    needs: [build-binaries, docker-images]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

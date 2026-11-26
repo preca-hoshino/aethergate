@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+
+FROM ghcr.io/sagernet/sing-box:v1.12.12 AS singbox-bin
+
+FROM rust:1.86-alpine AS rust-builder
+RUN apk add --no-cache musl-dev pkgconfig ca-certificates
+WORKDIR /app
+COPY Cargo.toml Cargo.lock sqlx.toml ./
+COPY crates/ ./crates/
+RUN cargo build --release --locked -p aethergate-agent && \
+    strip target/release/aethergate-agent
+
+FROM scratch
+COPY --from=rust-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=singbox-bin /usr/local/bin/sing-box /usr/local/bin/sing-box
+COPY --from=rust-builder /app/target/release/aethergate-agent /aethergate-agent
+ENTRYPOINT ["/aethergate-agent"]
+CMD ["--config", "/etc/aethergate/config.agent.toml"]

@@ -1,0 +1,16 @@
+services:
+  aethergate-agent:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-aethergate}/aethergate-agent:latest
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./config.agent.toml:/etc/aethergate/config.agent.toml:ro
+      - agent_certs:/etc/aethergate/certs
+      - agent_wal:/var/lib/aethergate/wal
+
+volumes:
+  agent_certs:
+  agent_wal:

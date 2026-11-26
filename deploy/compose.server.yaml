@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aethergate
+      POSTGRES_USER: aethergate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-db-password}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aethergate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  aethergate-server:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-aethergate}/aethergate-server:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AETHERGATE_DATABASE_URL: postgres://aethergate:${POSTGRES_PASSWORD:-change-me-db-password}@postgres:5432/aethergate
+      AETHERGATE_MASTER_KEY_HEX: ${AETHERGATE_MASTER_KEY_HEX}
+      AETHERGATE_PUBLIC_BASE_URL: ${AETHERGATE_PUBLIC_BASE_URL:-http://localhost:8080}
+      AETHERGATE_STATS_TIMEZONE: ${AETHERGATE_STATS_TIMEZONE:-Asia/Shanghai}
+    volumes:
+      - ./config.server.toml:/etc/aethergate/config.server.toml:ro
+
+volumes:
+  pg_data:
