@@ -1806,6 +1806,8 @@ pub struct UserMonthlyTrafficDto {
     pub user_id: Uuid,
     /// Display name.
     pub display_name: String,
+    /// Optional OIDC avatar URL.
+    pub avatar_url: Option<String>,
     /// Immutable proxy username.
     pub proxy_username: String,
     /// Monthly uplink bytes.
@@ -1828,7 +1830,7 @@ pub async fn get_analytics_users(
     let rows = sqlx::query_as::<_, UserMonthlyTrafficDto>(
         r"
         SELECT
-            u.id AS user_id, u.display_name, u.proxy_username,
+            u.id AS user_id, u.display_name, u.avatar_url, u.proxy_username,
             COALESCE(t.uplink_bytes, 0) AS uplink_bytes,
             COALESCE(t.downlink_bytes, 0) AS downlink_bytes,
             COALESCE(t.peak_uplink_bps, 0) AS peak_uplink_bps,

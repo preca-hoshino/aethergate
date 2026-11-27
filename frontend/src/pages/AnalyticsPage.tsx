@@ -13,6 +13,7 @@ import type {
   UserNodeMatrixRow,
 } from '@/types/api'
 import { DataTable, DataTableColumnHeader } from '@/components/data-table'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -55,9 +56,23 @@ export function AnalyticsPage() {
         meta: { label: t('analytics.columns.user') },
         header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.user')} />,
         cell: ({ row }) => (
-          <div>
-            <div className="font-medium">{row.original.display_name}</div>
-            <div className="text-muted-foreground font-mono text-xs">{row.original.proxy_username}</div>
+          <div className="flex items-center gap-2.5">
+            <Avatar className="size-7">
+              <AvatarImage
+                src={row.original.avatar_url ?? undefined}
+                alt={row.original.display_name}
+                referrerPolicy="no-referrer"
+              />
+              <AvatarFallback className="text-[10px]">
+                {row.original.display_name.slice(0, 2).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <div className="truncate font-medium">{row.original.display_name}</div>
+              <div className="text-muted-foreground truncate font-mono text-xs">
+                {row.original.proxy_username}
+              </div>
+            </div>
           </div>
         ),
       },

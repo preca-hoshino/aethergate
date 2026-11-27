@@ -135,6 +135,7 @@ export interface AnalyticsOverview {
 export interface UserMonthlyTraffic {
   user_id: string
   display_name: string
+  avatar_url: string | null
   proxy_username: string
   uplink_bytes: number
   downlink_bytes: number

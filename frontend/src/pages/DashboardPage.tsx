@@ -13,7 +13,7 @@ import type {
   TimeSeriesBucket,
   UserMonthlyTraffic,
 } from '@/types/api'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -215,6 +215,11 @@ export function DashboardPage() {
                   topUsers.slice(0, 6).map((u) => (
                     <div key={u.user_id} className="flex items-center gap-3 text-sm">
                       <Avatar className="size-9">
+                        <AvatarImage
+                          src={u.avatar_url ?? undefined}
+                          alt={u.display_name}
+                          referrerPolicy="no-referrer"
+                        />
                         <AvatarFallback>{u.display_name.slice(0, 2).toUpperCase()}</AvatarFallback>
                       </Avatar>
                       <div className="min-w-0 flex-1">
