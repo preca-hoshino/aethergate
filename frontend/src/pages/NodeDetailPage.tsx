@@ -32,7 +32,7 @@ function defaultInboundFor(protocol: ProtocolType, host: string): NodeInboundSpe
         port_hopping_range: null,
         sort_order: 0,
         protocol_config: {
-          type: 'vless_reality',
+          protocol: 'vless_reality',
           server_name: 'www.microsoft.com',
           handshake_server: 'www.microsoft.com',
           handshake_port: 443,
@@ -54,7 +54,7 @@ function defaultInboundFor(protocol: ProtocolType, host: string): NodeInboundSpe
         port_hopping_range: null,
         sort_order: 1,
         protocol_config: {
-          type: 'hysteria2',
+          protocol: 'hysteria2',
           up_mbps: 200,
           down_mbps: 500,
           ignore_client_bandwidth: false,
@@ -74,7 +74,7 @@ function defaultInboundFor(protocol: ProtocolType, host: string): NodeInboundSpe
         port_hopping_range: null,
         sort_order: 2,
         protocol_config: {
-          type: 'tuic',
+          protocol: 'tuic',
           congestion_control: 'bbr',
           udp_relay_mode: 'native',
           zero_rtt_handshake: false,
@@ -94,7 +94,7 @@ function defaultInboundFor(protocol: ProtocolType, host: string): NodeInboundSpe
         port_hopping_range: null,
         sort_order: 3,
         protocol_config: {
-          type: 'anytls',
+          protocol: 'anytls',
           padding_scheme: [],
         },
       }
@@ -188,7 +188,23 @@ export function NodeDetailPage() {
   }, [node])
 
   const saveInboundsMutation = useMutation({
-    mutationFn: () => api.put<{ config_revision: number }>(`/api/v1/nodes/${nodeId}/inbounds`, { inbounds }),
+    mutationFn: () => {
+      const normalized = inbounds.map((ib, idx) => {
+        const restCfg = { ...ib.protocol_config }
+        delete restCfg.type
+        return {
+          ...ib,
+          sort_order: idx,
+          protocol_config: {
+            ...restCfg,
+            protocol: ib.protocol,
+          },
+        }
+      })
+      return api.put<{ config_revision: number }>(`/api/v1/nodes/${nodeId}/inbounds`, {
+        inbounds: normalized,
+      })
+    },
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: ['node-detail', nodeId] })
       toast.success(t('nodeDetail.inbounds.savedToast', { rev: res.config_revision }))
