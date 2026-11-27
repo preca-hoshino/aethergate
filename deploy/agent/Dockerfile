@@ -57,4 +57,4 @@ COPY --from=rust-builder /out/etc /etc
 COPY --from=rust-builder /out/var /var
 
 ENTRYPOINT ["/aethergate-agent"]
-CMD ["--config", "/etc/aethergate/agent.toml"]
+CMD ["--config", "/etc/aethergate/config.agent.toml"]
