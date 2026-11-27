@@ -12,7 +12,7 @@ ARG TARGETARCH
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends musl-tools binutils ca-certificates \
+    && apt-get install -y --no-install-recommends musl-tools binutils ca-certificates cmake \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \

@@ -19,6 +19,12 @@ use crate::sync_loop::run_agent_loop;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .map_err(|_| anyhow::anyhow!("failed to install aws-lc-rs crypto provider"))?;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
