@@ -1119,6 +1119,8 @@ pub struct UserSummaryDto {
     pub display_name: String,
     /// Email.
     pub email: Option<String>,
+    /// Optional OIDC avatar URL.
+    pub avatar_url: Option<String>,
     /// Role (`admin` or `user`).
     pub role: String,
     /// Account type (`user` or `relay`).
@@ -1263,7 +1265,7 @@ pub async fn list_users(
     let rows = sqlx::query_as::<_, UserSummaryDto>(
         r"
         SELECT
-            u.id, u.display_name, u.email, u.role, u.account_type, u.panel_status,
+            u.id, u.display_name, u.email, u.avatar_url, u.role, u.account_type, u.panel_status,
             u.proxy_enabled, u.proxy_username, u.created_at,
             COALESCE((
                 SELECT COUNT(DISTINCT node_id)::bigint FROM (
@@ -1299,6 +1301,8 @@ pub struct UserDetailDto {
     pub display_name: String,
     /// Email.
     pub email: Option<String>,
+    /// Optional OIDC avatar URL.
+    pub avatar_url: Option<String>,
     /// Role.
     pub role: String,
     /// Panel status.
@@ -1326,6 +1330,8 @@ struct UserRecordRow {
     display_name: String,
     /// Email.
     email: Option<String>,
+    /// Optional OIDC avatar URL.
+    avatar_url: Option<String>,
     /// Role.
     role: String,
     /// Panel status.
@@ -1348,7 +1354,7 @@ pub async fn get_user_detail(
 ) -> AppResult<Json<UserDetailDto>> {
     let u = sqlx::query_as::<_, UserRecordRow>(
         r"
-        SELECT id, display_name, email, role, panel_status, proxy_enabled,
+        SELECT id, display_name, email, avatar_url, role, panel_status, proxy_enabled,
                proxy_username, proxy_uuid, sub_token
         FROM users WHERE id = $1
         ",
@@ -1373,6 +1379,7 @@ pub async fn get_user_detail(
         id: u.id,
         display_name: u.display_name,
         email: u.email,
+        avatar_url: u.avatar_url,
         role: u.role,
         panel_status: u.panel_status,
         proxy_enabled: u.proxy_enabled,

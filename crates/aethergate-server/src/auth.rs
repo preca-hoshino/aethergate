@@ -31,6 +31,8 @@ pub struct AuthUser {
     pub oidc_subject: String,
     /// Optional email address.
     pub email: Option<String>,
+    /// Optional OIDC profile picture URL.
+    pub avatar_url: Option<String>,
     /// Display name shown in the panel.
     pub display_name: String,
     /// Role (`"admin"` or `"user"`).
@@ -75,7 +77,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         let user = sqlx::query_as::<_, AuthUser>(
             r"
             SELECT
-                u.id, u.oidc_subject, u.email, u.display_name, u.role,
+                u.id, u.oidc_subject, u.email, u.avatar_url, u.display_name, u.role,
                 u.panel_status, u.proxy_enabled, u.proxy_username,
                 u.proxy_uuid, u.proxy_password, u.sub_token,
                 s.csrf_token, u.created_at
@@ -286,9 +288,13 @@ pub fn sanitize_redirect_path(raw: Option<&str>) -> String {
 #[derive(Debug, Deserialize)]
 pub struct OidcCallbackQuery {
     /// Authorization code from `IdP`.
-    pub code: String,
+    pub code: Option<String>,
     /// Anti-CSRF state token.
-    pub state: String,
+    pub state: Option<String>,
+    /// Optional OAuth error code returned by `IdP`.
+    pub error: Option<String>,
+    /// Optional human-readable error description returned by `IdP`.
+    pub error_description: Option<String>,
 }
 
 /// Stored PKCE state row.
@@ -318,6 +324,8 @@ struct OidcUserInfo {
     name: Option<String>,
     /// Optional preferred username.
     preferred_username: Option<String>,
+    /// Optional avatar URL.
+    picture: Option<String>,
 }
 
 /// `GET /api/v1/auth/oidc/callback` - exchanges code, runs JIT user provisioning, issues `HttpOnly` session.
@@ -325,12 +333,30 @@ pub async fn oidc_callback(
     State(state): State<AppState>,
     Query(query): Query<OidcCallbackQuery>,
 ) -> AppResult<Response> {
+    if let Some(err) = query.error {
+        let detail = query
+            .error_description
+            .filter(|d| !d.trim().is_empty())
+            .unwrap_or_else(|| err.clone());
+        return Err(AppError::Unauthorized(format!(
+            "OIDC provider error ({err}): {detail}"
+        )));
+    }
+    let code = query
+        .code
+        .filter(|c| !c.trim().is_empty())
+        .ok_or_else(|| AppError::BadRequest("missing OIDC authorization code".to_owned()))?;
+    let state_token = query
+        .state
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| AppError::BadRequest("missing OIDC state".to_owned()))?;
+
     let doc = resolve_oidc_endpoints(&state).await?;
 
     let state_row = sqlx::query_as::<_, OidcStateRow>(
         "DELETE FROM oidc_states WHERE state = $1 AND expires_at > NOW() RETURNING pkce_verifier, redirect_to",
     )
-    .bind(&query.state)
+    .bind(&state_token)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::Unauthorized("invalid or expired OIDC state".to_owned()))?;
@@ -338,7 +364,7 @@ pub async fn oidc_callback(
     let redirect_uri = state.config.effective_oidc_redirect_uri();
     let mut form: HashMap<&str, String> = HashMap::new();
     form.insert("grant_type", "authorization_code".to_owned());
-    form.insert("code", query.code);
+    form.insert("code", code);
     form.insert("redirect_uri", redirect_uri);
     form.insert("client_id", state.config.oidc.client_id.clone());
     if !state.config.oidc.client_secret.is_empty() {
@@ -405,15 +431,51 @@ pub async fn oidc_callback(
     Ok(response)
 }
 
+/// Normalizes an OIDC `picture` claim to a safe HTTP(S) URL.
+#[must_use]
+pub fn normalize_avatar_url(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() || trimmed.len() > 2048 {
+        return None;
+    }
+    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
 /// Inserts or updates a JIT user from OIDC claims; new self-registered users start with
 /// `role='user'`, `proxy_enabled=false` unless listed in bootstrap admin config.
 async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<Uuid> {
+    let avatar_url = normalize_avatar_url(claims.picture.as_deref());
+    let email = claims
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_owned);
+
     if let Some((existing_id,)) =
         sqlx::query_as::<_, (Uuid,)>("SELECT id FROM users WHERE oidc_subject = $1")
             .bind(&claims.sub)
             .fetch_optional(&state.db)
             .await?
     {
+        sqlx::query(
+            r"
+            UPDATE users
+            SET avatar_url = COALESCE($2, avatar_url),
+                email = COALESCE($3, email),
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(existing_id)
+        .bind(&avatar_url)
+        .bind(&email)
+        .execute(&state.db)
+        .await?;
         return Ok(existing_id);
     }
 
@@ -423,7 +485,7 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
         .bootstrap_admin_subjects
         .iter()
         .any(|s| s == &claims.sub)
-        || claims.email.as_deref().is_some_and(|em| {
+        || email.as_deref().is_some_and(|em| {
             state
                 .config
                 .oidc
@@ -444,21 +506,22 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
         .name
         .clone()
         .or_else(|| claims.preferred_username.clone())
-        .or_else(|| claims.email.clone())
+        .or_else(|| email.clone())
         .unwrap_or_else(|| proxy_username.clone());
 
     sqlx::query(
         r"
         INSERT INTO users (
-            id, oidc_subject, email, display_name, role, panel_status,
+            id, oidc_subject, email, avatar_url, display_name, role, panel_status,
             proxy_enabled, proxy_username, proxy_uuid, proxy_password, sub_token
         )
-        VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
         ",
     )
     .bind(user_id)
     .bind(&claims.sub)
-    .bind(&claims.email)
+    .bind(&email)
+    .bind(&avatar_url)
     .bind(&display_name)
     .bind(role)
     .bind(proxy_enabled)
@@ -528,5 +591,16 @@ mod tests {
         assert_eq!(sanitize_redirect_path(Some("https://evil.example")), "/");
         assert_eq!(sanitize_redirect_path(Some("//evil.example")), "/");
         assert_eq!(sanitize_redirect_path(None), "/");
+    }
+
+    #[test]
+    fn avatar_url_normalizer_accepts_only_http_urls() {
+        assert_eq!(
+            normalize_avatar_url(Some("  https://cdn.example/a.png ")).as_deref(),
+            Some("https://cdn.example/a.png")
+        );
+        assert_eq!(normalize_avatar_url(Some("javascript:alert(1)")), None);
+        assert_eq!(normalize_avatar_url(Some("   ")), None);
+        assert_eq!(normalize_avatar_url(None), None);
     }
 }

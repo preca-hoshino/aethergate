@@ -6,6 +6,7 @@ import { api } from '@/lib/api-client'
 import { formatBytes } from '@/lib/formatters'
 import { useAppStore } from '@/stores/use-app-store'
 import type { NodeGroup, NodeSummary, UserDetail, UserSummary } from '@/types/api'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -196,8 +197,22 @@ export function UsersPage() {
               {filtered.map((u) => (
                 <TableRow key={u.id}>
                   <TableCell>
-                    <div className="font-medium">{u.display_name}</div>
-                    <div className="text-muted-foreground text-xs">{u.email ?? '—'}</div>
+                    <div className="flex items-center gap-2.5">
+                      <Avatar className="size-7">
+                        <AvatarImage
+                          src={u.avatar_url ?? undefined}
+                          alt={u.display_name}
+                          referrerPolicy="no-referrer"
+                        />
+                        <AvatarFallback className="text-[10px]">
+                          {u.display_name.slice(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{u.display_name}</div>
+                        <div className="text-muted-foreground truncate text-xs">{u.email ?? '—'}</div>
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{u.proxy_username}</TableCell>
                   <TableCell>

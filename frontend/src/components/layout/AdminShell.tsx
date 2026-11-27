@@ -25,7 +25,7 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useLiveMetricsStore } from '@/stores/use-live-metrics-store'
 import type { AuthUser } from '@/types/api'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -176,6 +176,11 @@ export function AdminShell({ user, children }: AdminShellProps) {
                 className="hover:bg-sidebar-accent flex w-full items-center gap-2.5 rounded-md p-1.5 text-left text-sm"
               >
                 <Avatar className="size-8">
+                  <AvatarImage
+                    src={user.avatar_url ?? undefined}
+                    alt={user.display_name}
+                    referrerPolicy="no-referrer"
+                  />
                   <AvatarFallback>{initials}</AvatarFallback>
                 </Avatar>
                 {!collapsed && (

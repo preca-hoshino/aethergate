@@ -4,6 +4,7 @@ export interface AuthUser {
   id: string
   oidc_subject: string
   email: string | null
+  avatar_url: string | null
   display_name: string
   role: 'admin' | 'user'
   panel_status: 'active' | 'disabled'
@@ -92,6 +93,7 @@ export interface UserSummary {
   id: string
   display_name: string
   email: string | null
+  avatar_url: string | null
   role: 'admin' | 'user'
   account_type: 'user' | 'relay'
   panel_status: 'active' | 'disabled'
@@ -107,6 +109,7 @@ export interface UserDetail {
   id: string
   display_name: string
   email: string | null
+  avatar_url: string | null
   role: 'admin' | 'user'
   panel_status: 'active' | 'disabled'
   proxy_enabled: boolean
