@@ -208,7 +208,7 @@ jobs:
       - name: Upload sing-box Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
+          name: binary-${{ matrix.name }}
           path: dist-singbox/*
 
   docker-build-test:
@@ -237,7 +237,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./deploy/Dockerfile.server
+          file: ./deploy/server/Dockerfile
           platforms: ${{ matrix.platform }}
           load: true
           provenance: false
@@ -252,7 +252,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./deploy/Dockerfile.agent
+          file: ./deploy/agent/Dockerfile
           platforms: ${{ matrix.platform }}
           load: true
           provenance: false
@@ -282,7 +282,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./deploy/Dockerfile.server
+          file: ./deploy/server/Dockerfile
           platforms: ${{ matrix.platform }}
           provenance: false
           outputs: type=image,name=ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-server,push-by-digest=true,push=true
@@ -294,7 +294,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./deploy/Dockerfile.agent
+          file: ./deploy/agent/Dockerfile
           platforms: ${{ matrix.platform }}
           provenance: false
           outputs: type=image,name=ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-agent,push-by-digest=true,push=true
@@ -330,7 +330,7 @@ jobs:
       - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "*linux*|*windows*|*macos*|singbox*"
+          pattern: "binary-*"
           merge-multiple: true
           path: dist
 
