@@ -1,6 +1,16 @@
 import { create } from 'zustand'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
+export type SidebarVariant = 'inset' | 'sidebar' | 'floating'
+export type SidebarCollapsible = 'icon' | 'offcanvas'
+
+const THEME_STORAGE_KEY = 'ag-theme'
+const VARIANT_STORAGE_KEY = 'ag-sidebar-variant'
+const COLLAPSIBLE_STORAGE_KEY = 'ag-sidebar-collapsible'
+
+const DEFAULT_THEME: ThemeMode = 'system'
+const DEFAULT_VARIANT: SidebarVariant = 'inset'
+const DEFAULT_COLLAPSIBLE: SidebarCollapsible = 'icon'
 
 function currentYearMonth(): string {
   const d = new Date()
@@ -9,39 +19,83 @@ function currentYearMonth(): string {
   return `${y}-${m}`
 }
 
+function parseTheme(raw: string | null): ThemeMode {
+  if (raw === 'light' || raw === 'dark' || raw === 'system') return raw
+  return DEFAULT_THEME
+}
+
+function parseVariant(raw: string | null): SidebarVariant {
+  if (raw === 'inset' || raw === 'sidebar' || raw === 'floating') return raw
+  return DEFAULT_VARIANT
+}
+
+function parseCollapsible(raw: string | null): SidebarCollapsible {
+  if (raw === 'icon' || raw === 'offcanvas') return raw
+  return DEFAULT_COLLAPSIBLE
+}
+
+export function resolveEffectiveTheme(mode: ThemeMode): 'light' | 'dark' {
+  if (mode === 'light' || mode === 'dark') return mode
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
 export function applyThemeToDom(mode: ThemeMode): void {
   const root = document.documentElement
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  const isDark = mode === 'dark' || (mode === 'system' && prefersDark)
+  const resolved = resolveEffectiveTheme(mode)
+  const isDark = resolved === 'dark'
   root.classList.toggle('dark', isDark)
+  root.classList.toggle('light', !isDark)
+
+  const themeColor = isDark ? '#020817' : '#ffffff'
+  const metaThemeColor = document.querySelector("meta[name='theme-color']")
+  if (metaThemeColor) {
+    metaThemeColor.setAttribute('content', themeColor)
+  }
 }
 
 interface AppUiState {
   theme: ThemeMode
+  sidebarVariant: SidebarVariant
+  sidebarCollapsible: SidebarCollapsible
   selectedMonth: string
-  sidebarCollapsed: boolean
   commandOpen: boolean
   setTheme: (theme: ThemeMode) => void
+  setSidebarVariant: (variant: SidebarVariant) => void
+  setSidebarCollapsible: (collapsible: SidebarCollapsible) => void
+  resetLayout: () => void
   setSelectedMonth: (month: string) => void
-  toggleSidebar: () => void
   setCommandOpen: (open: boolean) => void
 }
 
 export const useAppStore = create<AppUiState>((set) => ({
-  theme: (localStorage.getItem('ag-theme') as ThemeMode | null) ?? 'system',
+  theme: parseTheme(localStorage.getItem(THEME_STORAGE_KEY)),
+  sidebarVariant: parseVariant(localStorage.getItem(VARIANT_STORAGE_KEY)),
+  sidebarCollapsible: parseCollapsible(localStorage.getItem(COLLAPSIBLE_STORAGE_KEY)),
   selectedMonth: currentYearMonth(),
-  sidebarCollapsed: false,
   commandOpen: false,
   setTheme: (theme) => {
-    localStorage.setItem('ag-theme', theme)
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
     applyThemeToDom(theme)
     set({ theme })
   },
+  setSidebarVariant: (sidebarVariant) => {
+    localStorage.setItem(VARIANT_STORAGE_KEY, sidebarVariant)
+    set({ sidebarVariant })
+  },
+  setSidebarCollapsible: (sidebarCollapsible) => {
+    localStorage.setItem(COLLAPSIBLE_STORAGE_KEY, sidebarCollapsible)
+    set({ sidebarCollapsible })
+  },
+  resetLayout: () => {
+    localStorage.setItem(VARIANT_STORAGE_KEY, DEFAULT_VARIANT)
+    localStorage.setItem(COLLAPSIBLE_STORAGE_KEY, DEFAULT_COLLAPSIBLE)
+    set({
+      sidebarVariant: DEFAULT_VARIANT,
+      sidebarCollapsible: DEFAULT_COLLAPSIBLE,
+    })
+  },
   setSelectedMonth: (selectedMonth) => {
     set({ selectedMonth })
-  },
-  toggleSidebar: () => {
-    set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed }))
   },
   setCommandOpen: (commandOpen) => {
     set({ commandOpen })

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Clock, Copy, QrCode, ShieldCheck } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
@@ -11,9 +12,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export function PortalPage() {
+  const { t } = useTranslation()
   const month = useAppStore((s) => s.selectedMonth)
   const [subFormat, setSubFormat] = useState<'mihomo' | 'singbox' | 'uri'>('mihomo')
 
@@ -29,7 +32,17 @@ export function PortalPage() {
   })
 
   if (isLoading || !summary) {
-    return <div className="text-muted-foreground p-6 text-sm">Loading your portal...</div>
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-12 w-64" />
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Skeleton className="h-24 rounded-xl" />
+          <Skeleton className="h-24 rounded-xl" />
+          <Skeleton className="h-24 rounded-xl" />
+        </div>
+        <Skeleton className="h-52 w-full rounded-xl" />
+      </div>
+    )
   }
 
   if (!summary.proxy_enabled) {
@@ -37,14 +50,11 @@ export function PortalPage() {
       <div className="mx-auto max-w-xl py-10">
         <Card>
           <CardHeader>
-            <div className="bg-amber-500/15 text-amber-600 dark:text-amber-400 mb-2 flex size-10 items-center justify-center rounded-lg">
+            <div className="mb-2 flex size-10 items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
               <Clock className="size-5" />
             </div>
-            <CardTitle>Pending Administrator Approval</CardTitle>
-            <CardDescription>
-              Your OIDC account ({summary.proxy_username}) is active, but proxy node access has not
-              been enabled yet. Please contact an administrator to assign your node permissions.
-            </CardDescription>
+            <CardTitle>{t('portal.pendingTitle')}</CardTitle>
+            <CardDescription>{t('portal.pendingDesc', { username: summary.proxy_username })}</CardDescription>
           </CardHeader>
         </Card>
       </div>
@@ -54,19 +64,26 @@ export function PortalPage() {
   const formattedSubUrl =
     subFormat === 'uri' ? summary.subscription_url : `${summary.subscription_url}?format=${subFormat}`
 
+  const formatLabel =
+    subFormat === 'mihomo'
+      ? t('portal.subscription.formats.mihomo')
+      : subFormat === 'singbox'
+        ? t('portal.subscription.formats.singbox')
+        : t('portal.subscription.formats.uri')
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">My Proxy Portal</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t('portal.title')}</h1>
         <p className="text-muted-foreground text-sm">
-          Monthly usage ({month}) &amp; 4-protocol subscription endpoints for {summary.proxy_username}.
+          {t('portal.subtitle', { month, username: summary.proxy_username })}
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Monthly Total</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portal.kpi.monthlyTotal')}</CardTitle>
           </CardHeader>
           <CardContent className="text-2xl font-bold">
             {formatBytes(summary.uplink_bytes + summary.downlink_bytes)}
@@ -74,7 +91,7 @@ export function PortalPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Uplink / Downlink</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portal.kpi.uplinkDownlink')}</CardTitle>
           </CardHeader>
           <CardContent className="font-mono text-sm">
             ↑ {formatBytes(summary.uplink_bytes)} · ↓ {formatBytes(summary.downlink_bytes)}
@@ -82,7 +99,7 @@ export function PortalPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Peak Bandwidth</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portal.kpi.peakBandwidth')}</CardTitle>
           </CardHeader>
           <CardContent className="font-mono text-sm">
             ↓ {formatBps(summary.peak_downlink_bps)}
@@ -95,11 +112,9 @@ export function PortalPage() {
           <div>
             <CardTitle className="flex items-center gap-2 text-base">
               <QrCode className="size-4" />
-              Universal Subscription URL
+              <span>{t('portal.subscription.title')}</span>
             </CardTitle>
-            <CardDescription>
-              Full Mihomo / Clash Meta YAML (2-level node &amp; protocol groups), sing-box JSON, or Base64 URIs.
-            </CardDescription>
+            <CardDescription>{t('portal.subscription.desc')}</CardDescription>
           </div>
           <Tabs
             value={subFormat}
@@ -108,9 +123,9 @@ export function PortalPage() {
             }}
           >
             <TabsList>
-              <TabsTrigger value="mihomo">Mihomo / Clash</TabsTrigger>
-              <TabsTrigger value="singbox">sing-box</TabsTrigger>
-              <TabsTrigger value="uri">Base64 URI</TabsTrigger>
+              <TabsTrigger value="mihomo">{t('portal.subscription.formats.mihomo')}</TabsTrigger>
+              <TabsTrigger value="singbox">{t('portal.subscription.formats.singbox')}</TabsTrigger>
+              <TabsTrigger value="uri">{t('portal.subscription.formats.uri')}</TabsTrigger>
             </TabsList>
           </Tabs>
         </CardHeader>
@@ -125,11 +140,11 @@ export function PortalPage() {
                 variant="outline"
                 onClick={() => {
                   void navigator.clipboard.writeText(formattedSubUrl)
-                  toast.success(`Copied ${subFormat} subscription URL`)
+                  toast.success(t('portal.subscription.copiedToast', { format: formatLabel }))
                 }}
               >
                 <Copy className="size-4" />
-                Copy
+                <span>{t('common.copy')}</span>
               </Button>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -146,34 +161,38 @@ export function PortalPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">4-Protocol Direct Links ({links.length})</CardTitle>
+          <CardTitle className="text-base">{t('portal.directLinks.title', { count: links.length })}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {links.map((item) => (
-            <div
-              key={`${item.node_id}-${item.inbound_tag}`}
-              className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div className="min-w-0 space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{item.node_name}</span>
-                  <Badge variant="outline">{item.protocol}</Badge>
-                </div>
-                <div className="text-muted-foreground truncate font-mono text-xs">{item.uri}</div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  void navigator.clipboard.writeText(item.uri)
-                  toast.success(`Copied ${item.protocol} URI`)
-                }}
+          {links.length === 0 ? (
+            <p className="text-muted-foreground py-6 text-center text-sm">{t('portal.directLinks.empty')}</p>
+          ) : (
+            links.map((item) => (
+              <div
+                key={`${item.node_id}-${item.inbound_tag}`}
+                className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
               >
-                <Copy className="size-3.5" />
-                Copy URI
-              </Button>
-            </div>
-          ))}
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{item.node_name}</span>
+                    <Badge variant="outline">{item.protocol}</Badge>
+                  </div>
+                  <div className="text-muted-foreground truncate font-mono text-xs">{item.uri}</div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(item.uri)
+                    toast.success(t('portal.directLinks.copiedToast', { protocol: item.protocol }))
+                  }}
+                >
+                  <Copy className="size-3.5" />
+                  <span>{t('portal.directLinks.copyUri')}</span>
+                </Button>
+              </div>
+            ))
+          )}
         </CardContent>
       </Card>
     </div>

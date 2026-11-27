@@ -1,4 +1,7 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { type ColumnDef } from '@tanstack/react-table'
+import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '@/lib/api-client'
 import { formatBps, formatBytes } from '@/lib/formatters'
@@ -9,25 +12,26 @@ import type {
   UserMonthlyTraffic,
   UserNodeMatrixRow,
 } from '@/types/api'
+import { DataTable, DataTableColumnHeader } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export function AnalyticsPage() {
+  const { t } = useTranslation()
   const month = useAppStore((s) => s.selectedMonth)
 
-  const { data: users = [] } = useQuery({
+  const { data: users = [], isLoading: usersLoading } = useQuery({
     queryKey: ['analytics-users', month],
     queryFn: () => api.get<UserMonthlyTraffic[]>(`/api/v1/analytics/users?month=${month}`),
   })
 
-  const { data: nodes = [] } = useQuery({
+  const { data: nodes = [], isLoading: nodesLoading } = useQuery({
     queryKey: ['analytics-nodes', month],
     queryFn: () => api.get<NodeMonthlyTraffic[]>(`/api/v1/analytics/nodes?month=${month}`),
   })
 
-  const { data: matrix = [] } = useQuery({
+  const { data: matrix = [], isLoading: matrixLoading } = useQuery({
     queryKey: ['analytics-matrix', month],
     queryFn: () => api.get<UserNodeMatrixRow[]>(`/api/v1/analytics/matrix?month=${month}`),
   })
@@ -43,56 +47,182 @@ export function AnalyticsPage() {
     downlinkGiB: Number((p.downlink_bytes / 1024 ** 3).toFixed(3)),
   }))
 
+  const userColumns = useMemo<ColumnDef<UserMonthlyTraffic>[]>(
+    () => [
+      {
+        id: 'user',
+        accessorFn: (row) => `${row.display_name} ${row.proxy_username}`,
+        meta: { label: t('analytics.columns.user') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.user')} />,
+        cell: ({ row }) => (
+          <div>
+            <div className="font-medium">{row.original.display_name}</div>
+            <div className="text-muted-foreground font-mono text-xs">{row.original.proxy_username}</div>
+          </div>
+        ),
+      },
+      {
+        accessorKey: 'uplink_bytes',
+        meta: { label: t('analytics.columns.uplink') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.uplink')} />,
+        cell: ({ row }) => <span className="font-mono text-xs">{formatBytes(row.original.uplink_bytes)}</span>,
+      },
+      {
+        accessorKey: 'downlink_bytes',
+        meta: { label: t('analytics.columns.downlink') },
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title={t('analytics.columns.downlink')} />
+        ),
+        cell: ({ row }) => <span className="font-mono text-xs">{formatBytes(row.original.downlink_bytes)}</span>,
+      },
+      {
+        id: 'total_bytes',
+        accessorFn: (row) => row.uplink_bytes + row.downlink_bytes,
+        meta: { label: t('analytics.columns.total') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.total')} />,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs font-medium">
+            {formatBytes(row.original.uplink_bytes + row.original.downlink_bytes)}
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'peak_downlink_bps',
+        meta: { label: t('analytics.columns.peakDownlink') },
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title={t('analytics.columns.peakDownlink')} />
+        ),
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{formatBps(row.original.peak_downlink_bps)}</span>
+        ),
+      },
+    ],
+    [t],
+  )
+
+  const nodeColumns = useMemo<ColumnDef<NodeMonthlyTraffic>[]>(
+    () => [
+      {
+        accessorKey: 'node_name',
+        meta: { label: t('analytics.columns.node') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.node')} />,
+        cell: ({ row }) => <span className="font-medium">{row.original.node_name}</span>,
+      },
+      {
+        accessorKey: 'region',
+        meta: { label: t('analytics.columns.region') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.region')} />,
+        cell: ({ row }) => row.original.region,
+      },
+      {
+        accessorKey: 'uplink_bytes',
+        meta: { label: t('analytics.columns.uplink') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.uplink')} />,
+        cell: ({ row }) => <span className="font-mono text-xs">{formatBytes(row.original.uplink_bytes)}</span>,
+      },
+      {
+        accessorKey: 'downlink_bytes',
+        meta: { label: t('analytics.columns.downlink') },
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title={t('analytics.columns.downlink')} />
+        ),
+        cell: ({ row }) => <span className="font-mono text-xs">{formatBytes(row.original.downlink_bytes)}</span>,
+      },
+      {
+        id: 'total_bytes',
+        accessorFn: (row) => row.uplink_bytes + row.downlink_bytes,
+        meta: { label: t('analytics.columns.total') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.total')} />,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs font-medium">
+            {formatBytes(row.original.uplink_bytes + row.original.downlink_bytes)}
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'peak_downlink_bps',
+        meta: { label: t('analytics.columns.peakDownlink') },
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title={t('analytics.columns.peakDownlink')} />
+        ),
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{formatBps(row.original.peak_downlink_bps)}</span>
+        ),
+      },
+    ],
+    [t],
+  )
+
+  const matrixColumns = useMemo<ColumnDef<UserNodeMatrixRow>[]>(
+    () => [
+      {
+        accessorKey: 'display_name',
+        meta: { label: t('analytics.columns.user') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.user')} />,
+        cell: ({ row }) => row.original.display_name,
+      },
+      {
+        accessorKey: 'node_name',
+        meta: { label: t('analytics.columns.node') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.node')} />,
+        cell: ({ row }) => row.original.node_name,
+      },
+      {
+        accessorKey: 'uplink_bytes',
+        meta: { label: t('analytics.columns.uplink') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.uplink')} />,
+        cell: ({ row }) => <span className="font-mono text-xs">{formatBytes(row.original.uplink_bytes)}</span>,
+      },
+      {
+        accessorKey: 'downlink_bytes',
+        meta: { label: t('analytics.columns.downlink') },
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title={t('analytics.columns.downlink')} />
+        ),
+        cell: ({ row }) => <span className="font-mono text-xs">{formatBytes(row.original.downlink_bytes)}</span>,
+      },
+      {
+        id: 'total_bytes',
+        accessorFn: (row) => row.uplink_bytes + row.downlink_bytes,
+        meta: { label: t('analytics.columns.total') },
+        header: ({ column }) => <DataTableColumnHeader column={column} title={t('analytics.columns.total')} />,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs font-medium">
+            {formatBytes(row.original.uplink_bytes + row.original.downlink_bytes)}
+          </span>
+        ),
+      },
+    ],
+    [t],
+  )
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">3D Monthly Analytics ({month})</h1>
-        <p className="text-muted-foreground text-sm">
-          Traffic &amp; peak bandwidth across User, Node, User × Node Matrix, and 4-Protocol dimensions.
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{t('analytics.title', { month })}</h1>
+        <p className="text-muted-foreground text-sm">{t('analytics.subtitle')}</p>
       </div>
 
       <Tabs defaultValue="users" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="users">Users</TabsTrigger>
-          <TabsTrigger value="nodes">Nodes</TabsTrigger>
-          <TabsTrigger value="matrix">User × Node Matrix</TabsTrigger>
-          <TabsTrigger value="protocols">Protocols</TabsTrigger>
+          <TabsTrigger value="users">{t('analytics.tabs.users')}</TabsTrigger>
+          <TabsTrigger value="nodes">{t('analytics.tabs.nodes')}</TabsTrigger>
+          <TabsTrigger value="matrix">{t('analytics.tabs.matrix')}</TabsTrigger>
+          <TabsTrigger value="protocols">{t('analytics.tabs.protocols')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="users">
           <Card>
             <CardHeader>
-              <CardTitle>User Monthly Traffic</CardTitle>
+              <CardTitle>{t('analytics.cards.usersTitle')}</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead>Uplink</TableHead>
-                    <TableHead>Downlink</TableHead>
-                    <TableHead>Total</TableHead>
-                    <TableHead>Peak Downlink</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {users.map((u) => (
-                    <TableRow key={u.user_id}>
-                      <TableCell>
-                        <div className="font-medium">{u.display_name}</div>
-                        <div className="text-muted-foreground font-mono text-xs">{u.proxy_username}</div>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{formatBytes(u.uplink_bytes)}</TableCell>
-                      <TableCell className="font-mono text-xs">{formatBytes(u.downlink_bytes)}</TableCell>
-                      <TableCell className="font-mono text-xs font-medium">
-                        {formatBytes(u.uplink_bytes + u.downlink_bytes)}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{formatBps(u.peak_downlink_bps)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DataTable
+                columns={userColumns}
+                data={users}
+                isLoading={usersLoading}
+                searchPlaceholder={t('analytics.searchUsersPlaceholder')}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -100,35 +230,15 @@ export function AnalyticsPage() {
         <TabsContent value="nodes">
           <Card>
             <CardHeader>
-              <CardTitle>Node Monthly Traffic</CardTitle>
+              <CardTitle>{t('analytics.cards.nodesTitle')}</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Node</TableHead>
-                    <TableHead>Region</TableHead>
-                    <TableHead>Uplink</TableHead>
-                    <TableHead>Downlink</TableHead>
-                    <TableHead>Total</TableHead>
-                    <TableHead>Peak Downlink</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {nodes.map((n) => (
-                    <TableRow key={n.node_id}>
-                      <TableCell className="font-medium">{n.node_name}</TableCell>
-                      <TableCell>{n.region}</TableCell>
-                      <TableCell className="font-mono text-xs">{formatBytes(n.uplink_bytes)}</TableCell>
-                      <TableCell className="font-mono text-xs">{formatBytes(n.downlink_bytes)}</TableCell>
-                      <TableCell className="font-mono text-xs font-medium">
-                        {formatBytes(n.uplink_bytes + n.downlink_bytes)}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{formatBps(n.peak_downlink_bps)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DataTable
+                columns={nodeColumns}
+                data={nodes}
+                isLoading={nodesLoading}
+                searchPlaceholder={t('analytics.searchNodesPlaceholder')}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -136,34 +246,16 @@ export function AnalyticsPage() {
         <TabsContent value="matrix">
           <Card>
             <CardHeader>
-              <CardTitle>User × Node Matrix</CardTitle>
-              <CardDescription>Exact monthly traffic per user per node</CardDescription>
+              <CardTitle>{t('analytics.cards.matrixTitle')}</CardTitle>
+              <CardDescription>{t('analytics.cards.matrixDesc')}</CardDescription>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead>Node</TableHead>
-                    <TableHead>Uplink</TableHead>
-                    <TableHead>Downlink</TableHead>
-                    <TableHead>Total</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {matrix.map((m) => (
-                    <TableRow key={`${m.user_id}-${m.node_id}`}>
-                      <TableCell>{m.display_name}</TableCell>
-                      <TableCell>{m.node_name}</TableCell>
-                      <TableCell className="font-mono text-xs">{formatBytes(m.uplink_bytes)}</TableCell>
-                      <TableCell className="font-mono text-xs">{formatBytes(m.downlink_bytes)}</TableCell>
-                      <TableCell className="font-mono text-xs font-medium">
-                        {formatBytes(m.uplink_bytes + m.downlink_bytes)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DataTable
+                columns={matrixColumns}
+                data={matrix}
+                isLoading={matrixLoading}
+                searchPlaceholder={t('analytics.searchMatrixPlaceholder')}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -171,28 +263,54 @@ export function AnalyticsPage() {
         <TabsContent value="protocols">
           <Card>
             <CardHeader>
-              <CardTitle>4-Protocol Breakdown (GiB)</CardTitle>
+              <CardTitle>{t('analytics.cards.protocolsTitle')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={protoChart}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="protocol" fontSize={12} />
-                    <YAxis fontSize={12} />
-                    <Tooltip />
-                    <Bar dataKey="downlinkGiB" name="Downlink (GiB)" fill="var(--chart-1)" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="uplinkGiB" name="Uplink (GiB)" fill="var(--chart-2)" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="flex flex-wrap gap-3">
-                {protocols.map((p) => (
-                  <Badge key={p.protocol} variant="outline" className="font-mono">
-                    {p.protocol}: {formatBytes(p.uplink_bytes + p.downlink_bytes)}
-                  </Badge>
-                ))}
-              </div>
+              {protoChart.length > 0 ? (
+                <>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={protoChart}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
+                        <XAxis dataKey="protocol" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                        <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: 'var(--popover)',
+                            borderColor: 'var(--border)',
+                            borderRadius: 'var(--radius)',
+                            color: 'var(--popover-foreground)',
+                            fontSize: '12px',
+                          }}
+                        />
+                        <Bar
+                          dataKey="downlinkGiB"
+                          name={t('dashboard.charts.downlinkGib')}
+                          fill="var(--chart-1)"
+                          radius={[4, 4, 0, 0]}
+                        />
+                        <Bar
+                          dataKey="uplinkGiB"
+                          name={t('dashboard.charts.uplinkGib')}
+                          fill="var(--chart-2)"
+                          radius={[4, 4, 0, 0]}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {protocols.map((p) => (
+                      <Badge key={p.protocol} variant="outline" className="font-mono">
+                        {p.protocol}: {formatBytes(p.uplink_bytes + p.downlink_bytes)}
+                      </Badge>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="text-muted-foreground py-10 text-center text-sm">
+                  {t('analytics.emptyProtocols', { month })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,17 +1,5 @@
-import { useEffect } from 'react'
-import {
-  createRootRoute,
-  createRoute,
-  createRouter,
-  Outlet,
-  useNavigate,
-  useRouterState,
-} from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { api, setCsrfToken } from '@/lib/api-client'
-import { wsManager } from '@/lib/ws-manager'
-import type { AuthUser } from '@/types/api'
-import { AdminShell } from '@/components/layout/AdminShell'
+import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import { NotFoundView, RootLayout } from '@/components/layout/RootLayout'
 import { AnalyticsPage } from '@/pages/AnalyticsPage'
 import { AuditLogsPage } from '@/pages/AuditLogsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -23,59 +11,7 @@ import { SettingsPage } from '@/pages/SettingsPage'
 import { SignInPage } from '@/pages/SignInPage'
 import { UsersPage } from '@/pages/UsersPage'
 
-function RootComponent() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const navigate = useNavigate()
-  const isSignIn = pathname === '/sign-in'
-
-  const { data: user, isLoading, isError } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: () => api.get<AuthUser>('/api/v1/auth/me'),
-    retry: false,
-    enabled: !isSignIn,
-  })
-
-  useEffect(() => {
-    if (user?.csrf_token) {
-      setCsrfToken(user.csrf_token)
-    }
-    if (user?.role === 'admin') {
-      wsManager.start()
-      return () => {
-        wsManager.stop()
-      }
-    }
-    return undefined
-  }, [user])
-
-  useEffect(() => {
-    if (!isSignIn && !isLoading && (isError || !user)) {
-      void navigate({ to: '/sign-in' })
-    } else if (user && user.role !== 'admin' && pathname !== '/portal' && !isSignIn) {
-      void navigate({ to: '/portal' })
-    }
-  }, [isSignIn, isLoading, isError, user, pathname, navigate])
-
-  if (isSignIn) {
-    return <Outlet />
-  }
-
-  if (isLoading || !user) {
-    return (
-      <div className="bg-background text-muted-foreground flex min-h-screen items-center justify-center text-sm">
-        Verifying session...
-      </div>
-    )
-  }
-
-  return (
-    <AdminShell user={user}>
-      <Outlet />
-    </AdminShell>
-  )
-}
-
-const rootRoute = createRootRoute({ component: RootComponent })
+const rootRoute = createRootRoute({ component: RootLayout, notFoundComponent: NotFoundView })
 
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -150,7 +86,10 @@ const routeTree = rootRoute.addChildren([
   portalRoute,
 ])
 
-export const router = createRouter({ routeTree })
+export const router = createRouter({
+  routeTree,
+  defaultNotFoundComponent: NotFoundView,
+})
 
 declare module '@tanstack/react-router' {
   interface Register {

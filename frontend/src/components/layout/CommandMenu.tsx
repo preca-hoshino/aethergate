@@ -1,33 +1,43 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { Command } from 'cmdk'
 import {
   Activity,
   BarChart3,
   Boxes,
   FileText,
+  Languages,
+  Laptop,
   LayoutDashboard,
+  Moon,
   Server,
   Settings,
+  Sun,
   Users,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { setAppLocale } from '@/i18n'
 import { useAppStore } from '@/stores/use-app-store'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import type { AuthUser } from '@/types/api'
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from '@/components/ui/command'
+import { ScrollArea } from '@/components/ui/scroll-area'
 
-const ADMIN_COMMANDS = [
-  { label: 'Dashboard Overview', to: '/', icon: LayoutDashboard },
-  { label: 'Nodes & 4-Protocol Builder', to: '/nodes', icon: Server },
-  { label: 'Node Groups', to: '/node-groups', icon: Boxes },
-  { label: 'Users & Approvals', to: '/users', icon: Users },
-  { label: '3D Monthly Analytics', to: '/analytics', icon: BarChart3 },
-  { label: 'Audit Logs', to: '/audit-logs', icon: FileText },
-  { label: 'System Settings', to: '/settings', icon: Settings },
-  { label: 'User Portal View', to: '/portal', icon: Activity },
-] as const
+interface CommandMenuProps {
+  role?: AuthUser['role']
+}
 
-export function CommandMenu() {
+export function CommandMenu({ role = 'admin' }: CommandMenuProps) {
+  const { t } = useTranslation()
   const open = useAppStore((s) => s.commandOpen)
   const setOpen = useAppStore((s) => s.setCommandOpen)
+  const setTheme = useAppStore((s) => s.setTheme)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -43,42 +53,120 @@ export function CommandMenu() {
     }
   }, [open, setOpen])
 
+  const runCommand = useCallback(
+    (action: () => void) => {
+      setOpen(false)
+      action()
+    },
+    [setOpen],
+  )
+
+  const navCommands =
+    role === 'admin'
+      ? [
+          { label: t('command.items.overview'), to: '/', icon: LayoutDashboard },
+          { label: t('command.items.nodes'), to: '/nodes', icon: Server },
+          { label: t('command.items.nodeGroups'), to: '/node-groups', icon: Boxes },
+          { label: t('command.items.users'), to: '/users', icon: Users },
+          { label: t('command.items.analytics'), to: '/analytics', icon: BarChart3 },
+          { label: t('command.items.auditLogs'), to: '/audit-logs', icon: FileText },
+          { label: t('command.items.settings'), to: '/settings', icon: Settings },
+          { label: t('command.items.portal'), to: '/portal', icon: Activity },
+        ]
+      : [{ label: t('command.items.portal'), to: '/portal', icon: Activity }]
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-lg">
-        <Command className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium">
-          <div className="flex items-center border-b px-3">
-            <Command.Input
-              placeholder="Jump to page or action..."
-              className="placeholder:text-muted-foreground flex h-11 w-full bg-transparent py-3 text-sm outline-none"
-            />
-          </div>
-          <Command.List className="max-h-72 overflow-y-auto p-2">
-            <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
-              No matching command.
-            </Command.Empty>
-            <Command.Group heading="Navigation">
-              {ADMIN_COMMANDS.map((item) => {
-                const Icon = item.icon
-                return (
-                  <Command.Item
-                    key={item.to}
-                    value={item.label}
-                    onSelect={() => {
-                      setOpen(false)
+    <CommandDialog
+      open={open}
+      onOpenChange={setOpen}
+      title={t('command.dialogTitle')}
+      description={t('command.dialogDescription')}
+    >
+      <CommandInput placeholder={t('command.inputPlaceholder')} />
+      <CommandList>
+        <ScrollArea className="h-72 pe-1">
+          <CommandEmpty>{t('command.empty')}</CommandEmpty>
+          <CommandGroup heading={t('command.navigationGroup')}>
+            {navCommands.map((item) => {
+              const Icon = item.icon
+              return (
+                <CommandItem
+                  key={item.to}
+                  value={`${item.label} ${item.to}`}
+                  onSelect={() => {
+                    runCommand(() => {
                       void navigate({ to: item.to })
-                    }}
-                    className="aria-selected:bg-accent aria-selected:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm"
-                  >
-                    <Icon className="size-4 opacity-70" />
-                    <span>{item.label}</span>
-                  </Command.Item>
-                )
-              })}
-            </Command.Group>
-          </Command.List>
-        </Command>
-      </DialogContent>
-    </Dialog>
+                    })
+                  }}
+                >
+                  <Icon className="opacity-70" />
+                  <span>{item.label}</span>
+                </CommandItem>
+              )
+            })}
+          </CommandGroup>
+
+          <CommandSeparator />
+
+          <CommandGroup heading={t('command.themeGroup')}>
+            <CommandItem
+              onSelect={() => {
+                runCommand(() => {
+                  setTheme('light')
+                })
+              }}
+            >
+              <Sun />
+              <span>{t('theme.light')}</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => {
+                runCommand(() => {
+                  setTheme('dark')
+                })
+              }}
+            >
+              <Moon />
+              <span>{t('theme.dark')}</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => {
+                runCommand(() => {
+                  setTheme('system')
+                })
+              }}
+            >
+              <Laptop />
+              <span>{t('theme.system')}</span>
+            </CommandItem>
+          </CommandGroup>
+
+          <CommandSeparator />
+
+          <CommandGroup heading={t('command.languageGroup')}>
+            <CommandItem
+              onSelect={() => {
+                runCommand(() => {
+                  void setAppLocale('zh-CN')
+                })
+              }}
+            >
+              <Languages />
+              <span>{t('language.zhCN')}</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => {
+                runCommand(() => {
+                  void setAppLocale('en')
+                })
+              }}
+            >
+              <Languages />
+              <span>{t('language.en')}</span>
+            </CommandItem>
+          </CommandGroup>
+        </ScrollArea>
+      </CommandList>
+    </CommandDialog>
   )
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useParams } from '@tanstack/react-router'
-import { KeyRound, Plus, RefreshCw, Save, Trash2 } from 'lucide-react'
+import { Link, useParams } from '@tanstack/react-router'
+import { ArrowLeft, KeyRound, Plus, RefreshCw, Save, Trash2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
 import type { NodeDetail, NodeInboundSpec, ProtocolType, TlsProfile } from '@/types/api'
@@ -11,7 +12,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 function defaultInboundFor(protocol: ProtocolType, host: string): NodeInboundSpec {
   const id = crypto.randomUUID()
@@ -124,8 +127,7 @@ function parseDnsRoute(raw: Record<string, unknown>): DnsRouteForm {
     dns_server_name: typeof raw.dns_server_name === 'string' ? raw.dns_server_name : '',
     dns_strategy: typeof raw.dns_strategy === 'string' ? raw.dns_strategy : '',
     hijack_dns: typeof raw.hijack_dns === 'boolean' ? raw.hijack_dns : true,
-    auto_detect_interface:
-      typeof raw.auto_detect_interface === 'boolean' ? raw.auto_detect_interface : true,
+    auto_detect_interface: typeof raw.auto_detect_interface === 'boolean' ? raw.auto_detect_interface : true,
     reject_private_ip: typeof raw.reject_private_ip === 'boolean' ? raw.reject_private_ip : true,
   }
 }
@@ -141,17 +143,16 @@ function parseOutbounds(raw: Array<Record<string, unknown>>): CustomOutboundItem
     password: typeof ob.password === 'string' ? ob.password : undefined,
     server_name: typeof ob.server_name === 'string' ? ob.server_name : undefined,
     insecure: typeof ob.insecure === 'boolean' ? ob.insecure : false,
-    alpn: Array.isArray(ob.alpn)
-      ? ob.alpn.filter((v): v is string => typeof v === 'string')
-      : undefined,
+    alpn: Array.isArray(ob.alpn) ? ob.alpn.filter((v): v is string => typeof v === 'string') : undefined,
   }))
 }
 
 export function NodeDetailPage() {
+  const { t } = useTranslation()
   const { nodeId } = useParams({ from: '/nodes/$nodeId' })
   const queryClient = useQueryClient()
 
-  const { data: node } = useQuery({
+  const { data: node, isLoading } = useQuery({
     queryKey: ['node-detail', nodeId],
     queryFn: () => api.get<NodeDetail>(`/api/v1/nodes/${nodeId}`),
   })
@@ -187,7 +188,7 @@ export function NodeDetailPage() {
     mutationFn: () => api.put<{ config_revision: number }>(`/api/v1/nodes/${nodeId}/inbounds`, { inbounds }),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: ['node-detail', nodeId] })
-      toast.success(`Saved inbounds (config rev ${res.config_revision})`)
+      toast.success(t('nodeDetail.inbounds.savedToast', { rev: res.config_revision }))
     },
     onError: (err: Error) => {
       toast.error(err.message)
@@ -198,7 +199,7 @@ export function NodeDetailPage() {
     mutationFn: () => api.put<{ config_revision: number }>(`/api/v1/nodes/${nodeId}/tls-profile`, tls),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: ['node-detail', nodeId] })
-      toast.success(`Saved TLS profile (config rev ${res.config_revision})`)
+      toast.success(t('nodeDetail.tls.savedToast', { rev: res.config_revision }))
     },
     onError: (err: Error) => {
       toast.error(err.message)
@@ -254,7 +255,7 @@ export function NodeDetailPage() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['node-detail', nodeId] })
-      toast.success('Saved DNS, routing & custom outbounds (SSE pushed)')
+      toast.success(t('nodeDetail.routing.savedToast'))
     },
     onError: (err: Error) => {
       toast.error(err.message)
@@ -264,7 +265,10 @@ export function NodeDetailPage() {
   const reloadMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/nodes/${nodeId}/commands`, { action: 'reload_singbox' }),
     onSuccess: () => {
-      toast.success('Reload command dispatched via SSE')
+      toast.success(t('nodeDetail.reloadDispatched'))
+    },
+    onError: (err: Error) => {
+      toast.error(err.message)
     },
   })
 
@@ -285,562 +289,661 @@ export function NodeDetailPage() {
             : item,
         ),
       )
-      toast.success('Generated X25519 Reality keypair')
+      toast.success(t('nodeDetail.inbounds.generatedKeypairToast'))
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to generate keypair')
+      toast.error(err instanceof Error ? err.message : t('nodeDetail.inbounds.generateKeypairFailed'))
     }
   }
 
-  if (!node) {
-    return <div className="text-muted-foreground p-6 text-sm">Loading node configuration...</div>
+  if (isLoading || !node) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-9 w-40" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-80 w-full rounded-xl" />
+      </div>
+    )
   }
+
+  const statusBadgeVariant =
+    node.status === 'online' ? 'success' : node.status === 'degraded' ? 'warning' : 'secondary'
+  const statusLabel =
+    node.status === 'online'
+      ? t('common.online')
+      : node.status === 'degraded'
+        ? t('common.degraded')
+        : t('common.offline')
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
+        <div className="space-y-1">
+          <Button asChild variant="ghost" size="sm" className="-ms-2.5 h-7 px-2.5 text-muted-foreground">
+            <Link to="/nodes">
+              <ArrowLeft className="size-3.5" />
+              <span>{t('nodeDetail.backToNodes')}</span>
+            </Link>
+          </Button>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold tracking-tight">{node.name}</h1>
-            <Badge variant={node.status === 'online' ? 'success' : 'secondary'}>{node.status}</Badge>
+            <Badge variant={statusBadgeVariant}>{statusLabel}</Badge>
           </div>
           <p className="text-muted-foreground font-mono text-xs">
-            {node.host} · cfg rev {node.config_revision} · user rev {node.user_revision}
+            {t('nodeDetail.metaSummary', {
+              host: node.host,
+              cfgRev: node.config_revision,
+              userRev: node.user_revision,
+            })}
           </p>
         </div>
 
         <Button
           variant="outline"
+          disabled={reloadMutation.isPending}
           onClick={() => {
             reloadMutation.mutate()
           }}
         >
           <RefreshCw className="size-4" />
-          Reload sing-box
+          <span>{t('nodeDetail.reloadSingbox')}</span>
         </Button>
       </div>
 
-      {/* Shared Node TLS Profile */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Shared Node TLS Profile</CardTitle>
-          <CardDescription>Reused across Hysteria 2, TUIC v5, and AnyTLS inbounds on this node.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label>Certificate Mode</Label>
-            <Select value={tls.mode} onValueChange={(v) => { setTls({ ...tls, mode: v }); }}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="self_signed">self_signed (auto-generated by agent)</SelectItem>
-                <SelectItem value="external_files">external_files (PEM paths)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Server Name (SNI)</Label>
-            <Input value={tls.server_name} onChange={(e) => { setTls({ ...tls, server_name: e.target.value }); }} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Cert Path</Label>
-            <Input value={tls.cert_path} onChange={(e) => { setTls({ ...tls, cert_path: e.target.value }); }} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Key Path</Label>
-            <Input value={tls.key_path} onChange={(e) => { setTls({ ...tls, key_path: e.target.value }); }} />
-          </div>
-          <div className="sm:col-span-2">
-            <Button
-              size="sm"
-              disabled={saveTlsMutation.isPending}
-              onClick={() => {
-                saveTlsMutation.mutate()
-              }}
-            >
-              <Save className="size-4" />
-              Save TLS Profile
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="inbounds" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="inbounds">
+            {t('nodeDetail.tabs.inbounds')} ({inbounds.length})
+          </TabsTrigger>
+          <TabsTrigger value="tls">{t('nodeDetail.tabs.tls')}</TabsTrigger>
+          <TabsTrigger value="routing">{t('nodeDetail.tabs.routing')}</TabsTrigger>
+        </TabsList>
 
-      {/* 4-Protocol Inbound Builder */}
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <CardTitle>4-Protocol Inbounds</CardTitle>
-            <CardDescription>
-              TCP and UDP can share ports (e.g. VLESS Reality TCP/443 + Hysteria 2 UDP/443). Same-transport overlaps are blocked.
-            </CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
-            <Select value={addProto} onValueChange={(v) => { setAddProto(v as ProtocolType); }}>
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="vless_reality">VLESS Reality</SelectItem>
-                <SelectItem value="hysteria2">Hysteria 2</SelectItem>
-                <SelectItem value="tuic">TUIC v5</SelectItem>
-                <SelectItem value="anytls">AnyTLS</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => { setInbounds((prev) => [...prev, defaultInboundFor(addProto, node.host)]); }}
-            >
-              <Plus className="size-4" />
-              Add
-            </Button>
-          </div>
-        </CardHeader>
-
-        <CardContent className="space-y-4">
-          {inbounds.map((ib, idx) => (
-            <div key={ib.id || `${ib.tag}-${idx}`} className="space-y-3 rounded-lg border p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Badge>{ib.protocol}</Badge>
-                  <Badge variant="outline">
-                    {ib.protocol === 'vless_reality' || ib.protocol === 'anytls' ? 'TCP' : 'UDP'}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <span>Enabled</span>
-                    <Switch
-                      checked={ib.enabled}
-                      onCheckedChange={(checked) => { setInbounds((prev) => prev.map((x, i) => (i === idx ? { ...x, enabled: checked } : x))); }
-                      }
-                    />
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => { setInbounds((prev) => prev.filter((_, i) => i !== idx)); }}
-                  >
-                    <Trash2 className="text-destructive size-4" />
-                  </Button>
-                </div>
+        <TabsContent value="inbounds">
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>{t('nodeDetail.inbounds.title')}</CardTitle>
+                <CardDescription>{t('nodeDetail.inbounds.desc')}</CardDescription>
               </div>
-
-              <div className="grid gap-3 sm:grid-cols-4">
-                <div className="space-y-1">
-                  <Label className="text-xs">Tag</Label>
-                  <Input
-                    value={ib.tag}
-                    onChange={(e) => { setInbounds((prev) => prev.map((x, i) => (i === idx ? { ...x, tag: e.target.value } : x))); }
-                    }
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Listen Port</Label>
-                  <Input
-                    type="number"
-                    value={ib.listen_port}
-                    onChange={(e) => { setInbounds((prev) =>
-                        prev.map((x, i) => (i === idx ? { ...x, listen_port: Number(e.target.value) } : x)),
-                      ); }
-                    }
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Port Hopping Range (Hy2)</Label>
-                  <Input
-                    placeholder="20000-30000"
-                    value={ib.port_hopping_range ?? ''}
-                    onChange={(e) => { setInbounds((prev) =>
-                        prev.map((x, i) =>
-                          i === idx ? { ...x, port_hopping_range: e.target.value || null } : x,
-                        ),
-                      ); }
-                    }
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Outbound Tag (optional)</Label>
-                  <Input
-                    placeholder="direct / direct-campus / jp-hy2"
-                    value={ib.outbound_tag ?? ''}
-                    onChange={(e) => { setInbounds((prev) =>
-                        prev.map((x, i) =>
-                          i === idx ? { ...x, outbound_tag: e.target.value || null } : x,
-                        ),
-                      ); }
-                    }
-                  />
-                </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={addProto}
+                  onValueChange={(v) => {
+                    setAddProto(v as ProtocolType)
+                  }}
+                >
+                  <SelectTrigger className="w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="vless_reality">VLESS Reality</SelectItem>
+                    <SelectItem value="hysteria2">Hysteria 2</SelectItem>
+                    <SelectItem value="tuic">TUIC v5</SelectItem>
+                    <SelectItem value="anytls">AnyTLS</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setInbounds((prev) => [...prev, defaultInboundFor(addProto, node.host)])
+                  }}
+                >
+                  <Plus className="size-4" />
+                  <span>{t('nodeDetail.inbounds.addBtn')}</span>
+                </Button>
               </div>
+            </CardHeader>
 
-              {ib.protocol === 'vless_reality' && (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="space-y-1">
-                    <Label className="text-xs">Reality SNI</Label>
-                    <Input
-                      value={
-                        typeof ib.protocol_config.server_name === 'string'
-                          ? ib.protocol_config.server_name
-                          : ''
-                      }
-                      onChange={(e) => {
-                        setInbounds((prev) =>
-                          prev.map((x, i) =>
-                            i === idx
-                              ? {
-                                  ...x,
-                                  protocol_config: {
-                                    ...x.protocol_config,
-                                    server_name: e.target.value,
-                                    handshake_server: e.target.value,
-                                  },
-                                }
-                              : x,
-                          ),
-                        )
-                      }}
-                    />
+            <CardContent className="space-y-4">
+              {inbounds.length === 0 && (
+                <div className="text-muted-foreground rounded-lg border border-dashed py-10 text-center text-sm">
+                  {t('nodeDetail.inbounds.empty')}
+                </div>
+              )}
+
+              {inbounds.map((ib, idx) => (
+                <div key={ib.id || `${ib.tag}-${idx}`} className="space-y-3 rounded-lg border p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Badge>{ib.protocol}</Badge>
+                      <Badge variant="outline">
+                        {ib.protocol === 'vless_reality' || ib.protocol === 'anytls' ? 'TCP' : 'UDP'}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 text-xs">
+                        <span>{t('common.enabled')}</span>
+                        <Switch
+                          checked={ib.enabled}
+                          onCheckedChange={(checked) => {
+                            setInbounds((prev) =>
+                              prev.map((x, i) => (i === idx ? { ...x, enabled: checked } : x)),
+                            )
+                          }}
+                        />
+                      </label>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('common.delete')}
+                        onClick={() => {
+                          setInbounds((prev) => prev.filter((_, i) => i !== idx))
+                        }}
+                      >
+                        <Trash2 className="text-destructive size-4" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Private Key</Label>
-                    <Input
-                      value={
-                        typeof ib.protocol_config.private_key === 'string'
-                          ? ib.protocol_config.private_key
-                          : ''
-                      }
-                      onChange={(e) => {
-                        setInbounds((prev) =>
-                          prev.map((x, i) =>
-                            i === idx
-                              ? {
-                                  ...x,
-                                  protocol_config: { ...x.protocol_config, private_key: e.target.value },
-                                }
-                              : x,
-                          ),
-                        )
-                      }}
-                    />
-                  </div>
-                  <div className="flex items-end gap-2">
-                    <div className="flex-1 space-y-1">
-                      <Label className="text-xs">Public Key</Label>
+
+                  <div className="grid gap-3 sm:grid-cols-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('nodeDetail.inbounds.tag')}</Label>
                       <Input
-                        value={
-                          typeof ib.protocol_config.public_key === 'string'
-                            ? ib.protocol_config.public_key
-                            : ''
-                        }
+                        value={ib.tag}
+                        onChange={(e) => {
+                          setInbounds((prev) =>
+                            prev.map((x, i) => (i === idx ? { ...x, tag: e.target.value } : x)),
+                          )
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('nodeDetail.inbounds.listenPort')}</Label>
+                      <Input
+                        type="number"
+                        value={ib.listen_port}
                         onChange={(e) => {
                           setInbounds((prev) =>
                             prev.map((x, i) =>
-                              i === idx
-                                ? {
-                                    ...x,
-                                    protocol_config: { ...x.protocol_config, public_key: e.target.value },
-                                  }
-                                : x,
+                              i === idx ? { ...x, listen_port: Number(e.target.value) } : x,
                             ),
                           )
                         }}
                       />
                     </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('nodeDetail.inbounds.portHopping')}</Label>
+                      <Input
+                        placeholder="20000-30000"
+                        value={ib.port_hopping_range ?? ''}
+                        onChange={(e) => {
+                          setInbounds((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, port_hopping_range: e.target.value || null } : x,
+                            ),
+                          )
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('nodeDetail.inbounds.outboundTag')}</Label>
+                      <Input
+                        placeholder={t('nodeDetail.inbounds.outboundPlaceholder')}
+                        value={ib.outbound_tag ?? ''}
+                        onChange={(e) => {
+                          setInbounds((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, outbound_tag: e.target.value || null } : x,
+                            ),
+                          )
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {ib.protocol === 'vless_reality' && (
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">{t('nodeDetail.inbounds.realitySni')}</Label>
+                        <Input
+                          value={
+                            typeof ib.protocol_config.server_name === 'string'
+                              ? ib.protocol_config.server_name
+                              : ''
+                          }
+                          onChange={(e) => {
+                            setInbounds((prev) =>
+                              prev.map((x, i) =>
+                                i === idx
+                                  ? {
+                                      ...x,
+                                      protocol_config: {
+                                        ...x.protocol_config,
+                                        server_name: e.target.value,
+                                        handshake_server: e.target.value,
+                                      },
+                                    }
+                                  : x,
+                              ),
+                            )
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">{t('nodeDetail.inbounds.privateKey')}</Label>
+                        <Input
+                          value={
+                            typeof ib.protocol_config.private_key === 'string'
+                              ? ib.protocol_config.private_key
+                              : ''
+                          }
+                          onChange={(e) => {
+                            setInbounds((prev) =>
+                              prev.map((x, i) =>
+                                i === idx
+                                  ? {
+                                      ...x,
+                                      protocol_config: {
+                                        ...x.protocol_config,
+                                        private_key: e.target.value,
+                                      },
+                                    }
+                                  : x,
+                              ),
+                            )
+                          }}
+                        />
+                      </div>
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1 space-y-1">
+                          <Label className="text-xs">{t('nodeDetail.inbounds.publicKey')}</Label>
+                          <Input
+                            value={
+                              typeof ib.protocol_config.public_key === 'string'
+                                ? ib.protocol_config.public_key
+                                : ''
+                            }
+                            onChange={(e) => {
+                              setInbounds((prev) =>
+                                prev.map((x, i) =>
+                                  i === idx
+                                    ? {
+                                        ...x,
+                                        protocol_config: {
+                                          ...x.protocol_config,
+                                          public_key: e.target.value,
+                                        },
+                                      }
+                                    : x,
+                                ),
+                              )
+                            }}
+                          />
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          title={t('nodeDetail.inbounds.generateKeypair')}
+                          aria-label={t('nodeDetail.inbounds.generateKeypair')}
+                          onClick={() => {
+                            void genRealityKeypair(idx)
+                          }}
+                        >
+                          <KeyRound className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <Button
+                disabled={saveInboundsMutation.isPending}
+                onClick={() => {
+                  saveInboundsMutation.mutate()
+                }}
+              >
+                <Save className="size-4" />
+                <span>{t('nodeDetail.inbounds.saveBtn')}</span>
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="tls">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('nodeDetail.tls.title')}</CardTitle>
+              <CardDescription>{t('nodeDetail.tls.desc')}</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>{t('nodeDetail.tls.mode')}</Label>
+                <Select
+                  value={tls.mode}
+                  onValueChange={(v) => {
+                    setTls({ ...tls, mode: v })
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="self_signed">{t('nodeDetail.tls.modeSelfSigned')}</SelectItem>
+                    <SelectItem value="external_files">{t('nodeDetail.tls.modeExternal')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>{t('nodeDetail.tls.serverName')}</Label>
+                <Input
+                  value={tls.server_name}
+                  onChange={(e) => {
+                    setTls({ ...tls, server_name: e.target.value })
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>{t('nodeDetail.tls.certPath')}</Label>
+                <Input
+                  value={tls.cert_path}
+                  onChange={(e) => {
+                    setTls({ ...tls, cert_path: e.target.value })
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>{t('nodeDetail.tls.keyPath')}</Label>
+                <Input
+                  value={tls.key_path}
+                  onChange={(e) => {
+                    setTls({ ...tls, key_path: e.target.value })
+                  }}
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <Button
+                  size="sm"
+                  disabled={saveTlsMutation.isPending}
+                  onClick={() => {
+                    saveTlsMutation.mutate()
+                  }}
+                >
+                  <Save className="size-4" />
+                  <span>{t('nodeDetail.tls.saveBtn')}</span>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="routing">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('nodeDetail.routing.title')}</CardTitle>
+              <CardDescription>{t('nodeDetail.routing.desc')}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="space-y-1.5">
+                  <Label>{t('nodeDetail.routing.dnsServer')}</Label>
+                  <Input
+                    value={dnsRoute.dns_server}
+                    onChange={(e) => {
+                      setDnsRoute({ ...dnsRoute, dns_server: e.target.value })
+                    }}
+                    placeholder="https://223.5.5.5:443/dns-query"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>{t('nodeDetail.routing.dnsSni')}</Label>
+                  <Input
+                    value={dnsRoute.dns_server_name}
+                    onChange={(e) => {
+                      setDnsRoute({ ...dnsRoute, dns_server_name: e.target.value })
+                    }}
+                    placeholder="dns.alidns.com"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>{t('nodeDetail.routing.dnsStrategy')}</Label>
+                  <Select
+                    value={dnsRoute.dns_strategy || 'default'}
+                    onValueChange={(v) => {
+                      setDnsRoute({ ...dnsRoute, dns_strategy: v === 'default' ? '' : v })
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">{t('nodeDetail.routing.dnsStrategyDefault')}</SelectItem>
+                      <SelectItem value="prefer_ipv4">prefer_ipv4</SelectItem>
+                      <SelectItem value="ipv4_only">ipv4_only</SelectItem>
+                      <SelectItem value="prefer_ipv6">prefer_ipv6</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-6">
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={dnsRoute.hijack_dns}
+                    onCheckedChange={(checked) => {
+                      setDnsRoute({ ...dnsRoute, hijack_dns: checked })
+                    }}
+                  />
+                  <span>{t('nodeDetail.routing.hijackDns')}</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={dnsRoute.auto_detect_interface}
+                    onCheckedChange={(checked) => {
+                      setDnsRoute({ ...dnsRoute, auto_detect_interface: checked })
+                    }}
+                  />
+                  <span>{t('nodeDetail.routing.autoDetectInterface')}</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={dnsRoute.reject_private_ip}
+                    onCheckedChange={(checked) => {
+                      setDnsRoute({ ...dnsRoute, reject_private_ip: checked })
+                    }}
+                  />
+                  <span>{t('nodeDetail.routing.rejectPrivateIp')}</span>
+                </label>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label className="text-sm font-semibold">{t('nodeDetail.routing.customOutbounds')}</Label>
+                  <div className="flex flex-wrap gap-2">
                     <Button
+                      type="button"
                       variant="outline"
-                      size="icon"
-                      title="Generate X25519 Keypair"
+                      size="sm"
                       onClick={() => {
-                        void genRealityKeypair(idx)
+                        setOutbounds((prev) => [
+                          ...prev,
+                          {
+                            type: 'direct',
+                            tag: 'direct-campus',
+                            bind_interface: 'wan',
+                            routing_mark: 262144,
+                          },
+                        ])
                       }}
                     >
-                      <KeyRound className="size-4" />
+                      <Plus className="size-3.5" />
+                      <span>{t('nodeDetail.routing.addDirect')}</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setOutbounds((prev) => [
+                          ...prev,
+                          {
+                            type: 'hysteria2',
+                            tag: 'jp-hy2',
+                            server: '',
+                            server_port: 40001,
+                            password: '',
+                            insecure: false,
+                            alpn: ['h3'],
+                          },
+                        ])
+                      }}
+                    >
+                      <Plus className="size-3.5" />
+                      <span>{t('nodeDetail.routing.addHy2Relay')}</span>
                     </Button>
                   </div>
                 </div>
-              )}
-            </div>
-          ))}
 
-          <Button
-            disabled={saveInboundsMutation.isPending}
-            onClick={() => {
-              saveInboundsMutation.mutate()
-            }}
-          >
-            <Save className="size-4" />
-            Save &amp; Push Inbounds
-          </Button>
-        </CardContent>
-      </Card>
+                {outbounds.map((ob, idx) => (
+                  <div key={`${ob.type}-${idx}`} className="space-y-3 rounded-lg border p-3">
+                    <div className="flex items-center justify-between">
+                      <Badge variant="outline">{ob.type}</Badge>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('common.delete')}
+                        onClick={() => {
+                          setOutbounds((prev) => prev.filter((_, i) => i !== idx))
+                        }}
+                      >
+                        <Trash2 className="text-destructive size-4" />
+                      </Button>
+                    </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>DNS, Routing &amp; Custom Outbounds</CardTitle>
-          <CardDescription>
-            Configure DoH/DoT bootstrap DNS, multi-WAN routing marks, private-IP policies, and upstream Hysteria 2 relay outbounds.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label>Bootstrap DNS Server</Label>
-              <Input
-                value={dnsRoute.dns_server}
-                onChange={(e) => {
-                  setDnsRoute({ ...dnsRoute, dns_server: e.target.value })
-                }}
-                placeholder="https://223.5.5.5:443/dns-query"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>DNS TLS Server Name (SNI)</Label>
-              <Input
-                value={dnsRoute.dns_server_name}
-                onChange={(e) => {
-                  setDnsRoute({ ...dnsRoute, dns_server_name: e.target.value })
-                }}
-                placeholder="dns.alidns.com"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>DNS Strategy</Label>
-              <Select
-                value={dnsRoute.dns_strategy || 'default'}
-                onValueChange={(v) => {
-                  setDnsRoute({ ...dnsRoute, dns_strategy: v === 'default' ? '' : v })
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="space-y-1">
+                        <Label>{t('nodeDetail.routing.outboundTag')}</Label>
+                        <Input
+                          value={ob.tag}
+                          onChange={(e) => {
+                            setOutbounds((prev) =>
+                              prev.map((item, i) => (i === idx ? { ...item, tag: e.target.value } : item)),
+                            )
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>{t('nodeDetail.routing.bindInterface')}</Label>
+                        <Input
+                          value={ob.bind_interface ?? ''}
+                          onChange={(e) => {
+                            setOutbounds((prev) =>
+                              prev.map((item, i) =>
+                                i === idx ? { ...item, bind_interface: e.target.value || undefined } : item,
+                              ),
+                            )
+                          }}
+                          placeholder="wan"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>{t('nodeDetail.routing.routingMark')}</Label>
+                        <Input
+                          type="number"
+                          value={ob.routing_mark ?? ''}
+                          onChange={(e) => {
+                            const n = Number(e.target.value)
+                            setOutbounds((prev) =>
+                              prev.map((item, i) =>
+                                i === idx
+                                  ? {
+                                      ...item,
+                                      routing_mark: e.target.value && Number.isFinite(n) ? n : undefined,
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }}
+                          placeholder="262144"
+                        />
+                      </div>
+                    </div>
+
+                    {ob.type === 'hysteria2' && (
+                      <div className="grid gap-3 md:grid-cols-4">
+                        <div className="space-y-1">
+                          <Label>{t('nodeDetail.routing.upstreamServer')}</Label>
+                          <Input
+                            value={ob.server ?? ''}
+                            onChange={(e) => {
+                              setOutbounds((prev) =>
+                                prev.map((item, i) => (i === idx ? { ...item, server: e.target.value } : item)),
+                              )
+                            }}
+                            placeholder="jp-hnd-01.example.com"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>{t('nodeDetail.routing.port')}</Label>
+                          <Input
+                            type="number"
+                            value={ob.server_port ?? 40001}
+                            onChange={(e) => {
+                              const n = Number(e.target.value)
+                              setOutbounds((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx ? { ...item, server_port: Number.isFinite(n) ? n : 40001 } : item,
+                                ),
+                              )
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>{t('nodeDetail.routing.relayPassword')}</Label>
+                          <Input
+                            value={ob.password ?? ''}
+                            onChange={(e) => {
+                              setOutbounds((prev) =>
+                                prev.map((item, i) => (i === idx ? { ...item, password: e.target.value } : item)),
+                              )
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>{t('nodeDetail.routing.tlsSni')}</Label>
+                          <Input
+                            value={ob.server_name ?? ''}
+                            onChange={(e) => {
+                              setOutbounds((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx ? { ...item, server_name: e.target.value || undefined } : item,
+                                ),
+                              )
+                            }}
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 text-sm md:col-span-4">
+                          <Switch
+                            checked={ob.insecure ?? false}
+                            onCheckedChange={(checked) => {
+                              setOutbounds((prev) =>
+                                prev.map((item, i) => (i === idx ? { ...item, insecure: checked } : item)),
+                              )
+                            }}
+                          />
+                          <span>{t('nodeDetail.routing.insecureTls')}</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                disabled={saveRoutingMutation.isPending}
+                onClick={() => {
+                  saveRoutingMutation.mutate()
                 }}
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">Default (dual-stack)</SelectItem>
-                  <SelectItem value="prefer_ipv4">prefer_ipv4</SelectItem>
-                  <SelectItem value="ipv4_only">ipv4_only</SelectItem>
-                  <SelectItem value="prefer_ipv6">prefer_ipv6</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-6">
-            <label className="flex items-center gap-2 text-sm">
-              <Switch
-                checked={dnsRoute.hijack_dns}
-                onCheckedChange={(checked) => {
-                  setDnsRoute({ ...dnsRoute, hijack_dns: checked })
-                }}
-              />
-              <span>Hijack DNS traffic</span>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Switch
-                checked={dnsRoute.auto_detect_interface}
-                onCheckedChange={(checked) => {
-                  setDnsRoute({ ...dnsRoute, auto_detect_interface: checked })
-                }}
-              />
-              <span>auto_detect_interface (disable on multi-WAN)</span>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Switch
-                checked={dnsRoute.reject_private_ip}
-                onCheckedChange={(checked) => {
-                  setDnsRoute({ ...dnsRoute, reject_private_ip: checked })
-                }}
-              />
-              <span>Reject private IPs (disable for CERNET/LAN)</span>
-            </label>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Label className="text-sm font-semibold">Custom Outbounds</Label>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setOutbounds((prev) => [
-                      ...prev,
-                      { type: 'direct', tag: 'direct-campus', bind_interface: 'wan', routing_mark: 262144 },
-                    ])
-                  }}
-                >
-                  <Plus className="size-3.5" />
-                  Add Direct Outbound
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setOutbounds((prev) => [
-                      ...prev,
-                      {
-                        type: 'hysteria2',
-                        tag: 'jp-hy2',
-                        server: '',
-                        server_port: 40001,
-                        password: '',
-                        insecure: false,
-                        alpn: ['h3'],
-                      },
-                    ])
-                  }}
-                >
-                  <Plus className="size-3.5" />
-                  Add Hysteria 2 Relay
-                </Button>
-              </div>
-            </div>
-
-            {outbounds.map((ob, idx) => (
-              <div key={`${ob.type}-${idx}`} className="space-y-3 rounded-lg border p-3">
-                <div className="flex items-center justify-between">
-                  <Badge variant="outline">{ob.type}</Badge>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => {
-                      setOutbounds((prev) => prev.filter((_, i) => i !== idx))
-                    }}
-                  >
-                    <Trash2 className="text-destructive size-4" />
-                  </Button>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div className="space-y-1">
-                    <Label>Tag</Label>
-                    <Input
-                      value={ob.tag}
-                      onChange={(e) => {
-                        setOutbounds((prev) =>
-                          prev.map((item, i) => (i === idx ? { ...item, tag: e.target.value } : item)),
-                        )
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Bind Interface (optional)</Label>
-                    <Input
-                      value={ob.bind_interface ?? ''}
-                      onChange={(e) => {
-                        setOutbounds((prev) =>
-                          prev.map((item, i) =>
-                            i === idx ? { ...item, bind_interface: e.target.value || undefined } : item,
-                          ),
-                        )
-                      }}
-                      placeholder="wan"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Routing Mark (optional)</Label>
-                    <Input
-                      type="number"
-                      value={ob.routing_mark ?? ''}
-                      onChange={(e) => {
-                        const n = Number(e.target.value)
-                        setOutbounds((prev) =>
-                          prev.map((item, i) =>
-                            i === idx
-                              ? { ...item, routing_mark: e.target.value && Number.isFinite(n) ? n : undefined }
-                              : item,
-                          ),
-                        )
-                      }}
-                      placeholder="262144"
-                    />
-                  </div>
-                </div>
-
-                {ob.type === 'hysteria2' && (
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <div className="space-y-1">
-                      <Label>Upstream Server</Label>
-                      <Input
-                        value={ob.server ?? ''}
-                        onChange={(e) => {
-                          setOutbounds((prev) =>
-                            prev.map((item, i) => (i === idx ? { ...item, server: e.target.value } : item)),
-                          )
-                        }}
-                        placeholder="arts-jp-hnd-01.proxy.restart.org.cn"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Port</Label>
-                      <Input
-                        type="number"
-                        value={ob.server_port ?? 40001}
-                        onChange={(e) => {
-                          const n = Number(e.target.value)
-                          setOutbounds((prev) =>
-                            prev.map((item, i) =>
-                              i === idx ? { ...item, server_port: Number.isFinite(n) ? n : 40001 } : item,
-                            ),
-                          )
-                        }}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Relay Password</Label>
-                      <Input
-                        value={ob.password ?? ''}
-                        onChange={(e) => {
-                          setOutbounds((prev) =>
-                            prev.map((item, i) => (i === idx ? { ...item, password: e.target.value } : item)),
-                          )
-                        }}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>TLS SNI (optional)</Label>
-                      <Input
-                        value={ob.server_name ?? ''}
-                        onChange={(e) => {
-                          setOutbounds((prev) =>
-                            prev.map((item, i) =>
-                              i === idx ? { ...item, server_name: e.target.value || undefined } : item,
-                            ),
-                          )
-                        }}
-                      />
-                    </div>
-                    <label className="flex items-center gap-2 text-sm md:col-span-4">
-                      <Switch
-                        checked={ob.insecure ?? false}
-                        onCheckedChange={(checked) => {
-                          setOutbounds((prev) =>
-                            prev.map((item, i) => (i === idx ? { ...item, insecure: checked } : item)),
-                          )
-                        }}
-                      />
-                      <span>Skip TLS certificate verification (insecure)</span>
-                    </label>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <Button
-            disabled={saveRoutingMutation.isPending}
-            onClick={() => {
-              saveRoutingMutation.mutate()
-            }}
-          >
-            <Save className="size-4" />
-            Save &amp; Push DNS / Outbounds
-          </Button>
-        </CardContent>
-      </Card>
+                <Save className="size-4" />
+                <span>{t('nodeDetail.routing.saveBtn')}</span>
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
