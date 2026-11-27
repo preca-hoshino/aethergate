@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
 import type { NodeDetail, NodeInboundSpec, ProtocolType, TlsProfile } from '@/types/api'
+import { AgentConfigSnippet } from '@/components/agent-config-snippet'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -174,6 +176,7 @@ export function NodeDetailPage() {
   })
   const [outbounds, setOutbounds] = useState<CustomOutboundItem[]>([])
   const [addProto, setAddProto] = useState<ProtocolType>('vless_reality')
+  const [rotateOpen, setRotateOpen] = useState(false)
 
   useEffect(() => {
     if (node) {
@@ -272,6 +275,18 @@ export function NodeDetailPage() {
     },
   })
 
+  const rotateSecretMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/nodes/${nodeId}/rotate-secret`),
+    onSuccess: () => {
+      setRotateOpen(false)
+      void queryClient.invalidateQueries({ queryKey: ['node-detail', nodeId] })
+      toast.success(t('nodes.secretRotated'))
+    },
+    onError: (err: Error) => {
+      toast.error(err.message)
+    },
+  })
+
   const genRealityKeypair = async (idx: number) => {
     try {
       const pair = await api.post<{ private_key: string; public_key: string }>('/api/v1/nodes/reality-keypair')
@@ -356,6 +371,7 @@ export function NodeDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="tls">{t('nodeDetail.tabs.tls')}</TabsTrigger>
           <TabsTrigger value="routing">{t('nodeDetail.tabs.routing')}</TabsTrigger>
+          <TabsTrigger value="agent">{t('nodeDetail.tabs.agent')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="inbounds">
@@ -943,7 +959,39 @@ export function NodeDetailPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="agent">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('nodeDetail.agent.title')}</CardTitle>
+              <CardDescription>{t('nodeDetail.agent.desc')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <AgentConfigSnippet
+                nodeId={node.id}
+                hmacSecret={node.hmac_secret}
+                isRotating={rotateSecretMutation.isPending}
+                onRotateSecret={() => {
+                  setRotateOpen(true)
+                }}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      <ConfirmDialog
+        open={rotateOpen}
+        onOpenChange={setRotateOpen}
+        title={t('nodes.rotateConfirmTitle', { name: node.name })}
+        desc={t('nodes.rotateConfirmDesc')}
+        confirmText={t('nodes.rotateSecret')}
+        destructive
+        isLoading={rotateSecretMutation.isPending}
+        handleConfirm={() => {
+          rotateSecretMutation.mutate()
+        }}
+      />
     </div>
   )
 }

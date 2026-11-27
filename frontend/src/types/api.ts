@@ -72,6 +72,7 @@ export interface NodeDetail {
   host: string
   region: string
   status: string
+  hmac_secret: string
   tags: string[]
   config_revision: number
   user_revision: number

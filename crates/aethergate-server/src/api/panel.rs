@@ -17,7 +17,8 @@ use aethergate_protocol::{
 
 use crate::auth::{AdminUser, AuthenticatedUser};
 use crate::crypto::{
-    encrypt_secret, generate_node_hmac_secret, generate_random_token, generate_reality_keypair,
+    decrypt_secret, encrypt_secret, generate_node_hmac_secret, generate_random_token,
+    generate_reality_keypair,
 };
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -278,14 +279,14 @@ fn default_region() -> String {
     "default".to_owned()
 }
 
-/// Response returned on node creation or secret rotation (secret shown once).
+/// Response returned on node creation or secret rotation.
 #[derive(Debug, Serialize)]
 pub struct NodeBootstrapResponse {
     /// Node UUID.
     pub node_id: Uuid,
     /// Node name.
     pub name: String,
-    /// One-time plaintext HMAC secret for `config.agent.toml`.
+    /// Plaintext HMAC secret for `config.agent.toml`.
     pub hmac_secret: String,
 }
 
@@ -377,6 +378,8 @@ pub struct NodeDetailDto {
     pub region: String,
     /// Node status.
     pub status: String,
+    /// Plaintext HMAC secret for `config.agent.toml`.
+    pub hmac_secret: String,
     /// Tags list.
     pub tags: Vec<String>,
     /// Config revision.
@@ -408,6 +411,8 @@ struct NodeRecordRow {
     region: String,
     /// Status.
     status: String,
+    /// Encrypted HMAC secret.
+    hmac_secret_enc: Vec<u8>,
     /// Tags JSON.
     tags: Value,
     /// Config rev.
@@ -451,7 +456,7 @@ pub async fn get_node_detail(
 ) -> AppResult<Json<NodeDetailDto>> {
     let node = sqlx::query_as::<_, NodeRecordRow>(
         r"
-        SELECT id, parent_node_id, name, host, region, status, tags, config_revision, user_revision, tls_profile, outbounds, dns_route
+        SELECT id, parent_node_id, name, host, region, status, hmac_secret_enc, tags, config_revision, user_revision, tls_profile, outbounds, dns_route
         FROM nodes WHERE id = $1
         ",
     )
@@ -495,6 +500,10 @@ pub async fn get_node_detail(
     let tls_profile: TlsProfile = serde_json::from_value(node.tls_profile)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid tls_profile JSON: {e}")))?;
     let tags: Vec<String> = serde_json::from_value(node.tags).unwrap_or_default();
+    let secret_bytes = decrypt_secret(&state.master_key, &node.hmac_secret_enc)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to decrypt node secret: {e}")))?;
+    let hmac_secret = String::from_utf8(secret_bytes)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid node secret utf8: {e}")))?;
 
     Ok(Json(NodeDetailDto {
         id: node.id,
@@ -503,6 +512,7 @@ pub async fn get_node_detail(
         host: node.host,
         region: node.region,
         status: node.status,
+        hmac_secret,
         tags,
         config_revision: node.config_revision,
         user_revision: node.user_revision,

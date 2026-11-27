@@ -2,14 +2,15 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { type ColumnDef } from '@tanstack/react-table'
-import { Copy, Plus, Trash2 } from 'lucide-react'
+import { KeyRound, Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
 import { formatBytes } from '@/lib/formatters'
 import { useAppStore } from '@/stores/use-app-store'
 import { useLiveMetricsStore } from '@/stores/use-live-metrics-store'
-import type { NodeSummary } from '@/types/api'
+import type { NodeDetail, NodeSummary } from '@/types/api'
+import { AgentConfigSnippet } from '@/components/agent-config-snippet'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTable, DataTableColumnHeader } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
@@ -44,11 +45,19 @@ export function NodesPage() {
   const [region, setRegion] = useState('JP')
   const [parentNodeId, setParentNodeId] = useState('')
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null)
+  const [configTarget, setConfigTarget] = useState<NodeSummary | null>(null)
+  const [rotateTarget, setRotateTarget] = useState<NodeSummary | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<NodeSummary | null>(null)
 
   const { data: nodes = [], isLoading } = useQuery({
     queryKey: ['nodes', month],
     queryFn: () => api.get<NodeSummary[]>(`/api/v1/nodes?month=${month}`),
+  })
+
+  const { data: configDetail, isLoading: configLoading } = useQuery({
+    queryKey: ['node-detail', configTarget?.id],
+    queryFn: () => api.get<NodeDetail>(`/api/v1/nodes/${configTarget?.id ?? ''}`),
+    enabled: configTarget !== null,
   })
 
   const createMutation = useMutation({
@@ -78,6 +87,18 @@ export function NodesPage() {
       setDeleteTarget(null)
       void queryClient.invalidateQueries({ queryKey: ['nodes'] })
       toast.success(t('nodes.nodeDeleted'))
+    },
+    onError: (err: Error) => {
+      toast.error(err.message)
+    },
+  })
+
+  const rotateMutation = useMutation({
+    mutationFn: (id: string) => api.post<BootstrapResult>(`/api/v1/nodes/${id}/rotate-secret`),
+    onSuccess: (res) => {
+      setRotateTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['node-detail', res.node_id] })
+      toast.success(t('nodes.secretRotated'))
     },
     onError: (err: Error) => {
       toast.error(err.message)
@@ -182,6 +203,17 @@ export function NodesPage() {
           const node = row.original
           return (
             <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="icon"
+                title={t('nodes.viewConfig')}
+                aria-label={t('nodes.viewConfig')}
+                onClick={() => {
+                  setConfigTarget(node)
+                }}
+              >
+                <KeyRound className="size-4" />
+              </Button>
               <Button asChild variant="outline" size="sm">
                 <Link to="/nodes/$nodeId" params={{ nodeId: node.id }}>
                   {t('nodes.configure')}
@@ -249,27 +281,11 @@ export function NodesPage() {
             </DialogHeader>
 
             {bootstrap ? (
-              <div className="space-y-3 text-sm">
-                <p className="font-medium text-emerald-600 dark:text-emerald-400">
-                  {t('nodes.snippetNotice')}
-                </p>
-                <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs">
-                  {`node_id = "${bootstrap.node_id}"\nhmac_secret = "${bootstrap.hmac_secret}"\nserver_url = "${window.location.origin}"`}
-                </pre>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(
-                      `node_id = "${bootstrap.node_id}"\nhmac_secret = "${bootstrap.hmac_secret}"\nserver_url = "${window.location.origin}"`,
-                    )
-                    toast.success(t('nodes.copiedSnippet'))
-                  }}
-                >
-                  <Copy className="size-3.5" />
-                  <span>{t('nodes.copySnippet')}</span>
-                </Button>
-              </div>
+              <AgentConfigSnippet
+                nodeId={bootstrap.node_id}
+                hmacSecret={bootstrap.hmac_secret}
+                notice={t('nodes.snippetNotice')}
+              />
             ) : (
               <div className="space-y-4">
                 <div className="space-y-1.5">
@@ -356,6 +372,60 @@ export function NodesPage() {
         searchPlaceholder={t('nodes.searchPlaceholder')}
         filters={filters}
         emptyMessage={t('nodes.empty')}
+      />
+
+      <Dialog
+        open={configTarget !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setConfigTarget(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('nodes.configDialogTitle', { name: configTarget?.name ?? '' })}</DialogTitle>
+            <DialogDescription>{t('nodes.configDialogDesc')}</DialogDescription>
+          </DialogHeader>
+          {configLoading || !configDetail ? (
+            <div className="text-muted-foreground py-6 text-center text-sm">{t('common.loading')}</div>
+          ) : (
+            <AgentConfigSnippet
+              nodeId={configDetail.id}
+              hmacSecret={configDetail.hmac_secret}
+              isRotating={rotateMutation.isPending}
+              onRotateSecret={() => {
+                if (configTarget) {
+                  setRotateTarget(configTarget)
+                }
+              }}
+            />
+          )}
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                setConfigTarget(null)
+              }}
+            >
+              {t('common.done')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={rotateTarget !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setRotateTarget(null)
+        }}
+        title={t('nodes.rotateConfirmTitle', { name: rotateTarget?.name ?? '' })}
+        desc={t('nodes.rotateConfirmDesc')}
+        confirmText={t('nodes.rotateSecret')}
+        destructive
+        isLoading={rotateMutation.isPending}
+        handleConfirm={() => {
+          if (rotateTarget) {
+            rotateMutation.mutate(rotateTarget.id)
+          }
+        }}
       />
 
       <ConfirmDialog
