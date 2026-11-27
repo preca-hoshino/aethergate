@@ -1,130 +1,195 @@
-name: CI & Release
+name: CI & Release Pipeline
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
   packages: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   quality-gates:
+    name: Quality Gate (Format, Lint, Types, Tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
-      - name: Build & Lint Frontend
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Frontend install, typecheck, lint & build
         working-directory: frontend
         run: |
           npm ci --no-audit --no-fund
           npm run typecheck
           npm run lint
           npm run build
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Rust Fmt, Clippy & Tests
+
+      - name: Rust check-format, check-lint & check-test
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace --locked
 
   build-binaries:
+    name: Build Binary (${{ matrix.pkg }} - ${{ matrix.name }})
     needs: quality-gates
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - pkg: aethergate-server
+            name: server-linux-x64
             target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            ext: ""
+            bin_name: aethergate-server
+            artifact_name: aethergate-server-linux-x64
+            is_linux_musl: true
           - pkg: aethergate-server
+            name: server-linux-arm64
             target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            ext: ""
+            bin_name: aethergate-server
+            artifact_name: aethergate-server-linux-arm64
+            is_linux_musl: true
           - pkg: aethergate-server
+            name: server-windows-x64
             target: x86_64-pc-windows-msvc
             os: windows-latest
-            ext: ".exe"
+            bin_name: aethergate-server.exe
+            artifact_name: aethergate-server-windows-x64.exe
+            is_linux_musl: false
           - pkg: aethergate-server
+            name: server-macos-arm64
             target: aarch64-apple-darwin
             os: macos-latest
-            ext: ""
+            bin_name: aethergate-server
+            artifact_name: aethergate-server-macos-arm64
+            is_linux_musl: false
           - pkg: aethergate-agent
+            name: agent-linux-x64
             target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            ext: ""
+            bin_name: aethergate-agent
+            artifact_name: aethergate-agent-linux-x64
+            is_linux_musl: true
           - pkg: aethergate-agent
+            name: agent-linux-arm64
             target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            ext: ""
-    runs-on: ${{ matrix.os }}
+            bin_name: aethergate-agent
+            artifact_name: aethergate-agent-linux-arm64
+            is_linux_musl: true
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (for server frontend embedding)
         if: matrix.pkg == 'aethergate-server'
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
-      - name: Build Frontend for rust-embed
+
+      - name: Build frontend dist
         if: matrix.pkg == 'aethergate-server'
         working-directory: frontend
         run: |
           npm ci --no-audit --no-fund
           npm run build
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Zig and cargo-zigbuild (Linux musl cross-link)
-        if: runner.os == 'Linux'
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Zig & cargo-zigbuild (Linux musl cross-compile)
+        if: matrix.is_linux_musl
         uses: mlugg/setup-zig@v2
-      - uses: taiki-e/install-action@cargo-zigbuild
-        if: runner.os == 'Linux'
-      - name: Build Binary (Linux musl via cargo-zigbuild)
-        if: runner.os == 'Linux'
+
+      - name: Install cargo-zigbuild
+        if: matrix.is_linux_musl
+        uses: taiki-e/install-action@cargo-zigbuild
+
+      - name: Build release binary (Linux musl via cargo-zigbuild)
+        if: matrix.is_linux_musl
+        run: cargo zigbuild --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
+
+      - name: Build release binary (Windows / macOS)
+        if: "!matrix.is_linux_musl"
+        run: cargo build --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
+
+      - name: Stage binary artifact
+        shell: bash
         run: |
-          cargo zigbuild --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
-          mkdir -p dist-bin
-          cp "target/${{ matrix.target }}/release/${{ matrix.pkg }}${{ matrix.ext }}" "dist-bin/${{ matrix.pkg }}-${{ matrix.target }}${{ matrix.ext }}"
-      - name: Build Binary (Windows / macOS)
-        if: runner.os != 'Linux'
-        run: |
-          cargo build --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
-          mkdir -p dist-bin
-          cp "target/${{ matrix.target }}/release/${{ matrix.pkg }}${{ matrix.ext }}" "dist-bin/${{ matrix.pkg }}-${{ matrix.target }}${{ matrix.ext }}"
-      - uses: actions/upload-artifact@v4
+          mkdir -p staging
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "staging/${{ matrix.artifact_name }}"
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@v4
         with:
-          name: ${{ matrix.pkg }}-${{ matrix.target }}
-          path: dist-bin/*
+          subject-path: staging/${{ matrix.artifact_name }}
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: staging/*
+          if-no-files-found: error
 
   build-singbox:
+    name: Build sing-box v1.13.14 (${{ matrix.goarch }})
     needs: quality-gates
-    if: github.event_name == 'push'
-    strategy:
-      matrix:
-        goarch: [amd64, arm64]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            name: singbox-linux-x64
+            bin: sing-box-v1.13.14-v2ray-linux-amd64
+          - goarch: arm64
+            name: singbox-linux-arm64
+            bin: sing-box-v1.13.14-v2ray-linux-arm64
     steps:
-      - uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.24"
-      - name: Build sing-box v1.13.14 with with_v2ray_api (${{ matrix.goarch }})
+
+      - name: Build sing-box with with_v2ray_api
         run: |
           git clone --depth 1 --branch v1.13.14 https://github.com/SagerNet/sing-box.git /tmp/sing-box
           cd /tmp/sing-box
@@ -132,73 +197,269 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}" go build \
             -trimpath -ldflags "-s -w" \
             -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_v2ray_api,with_tailscale" \
-            -o "${GITHUB_WORKSPACE}/dist-singbox/sing-box-v1.13.14-v2ray-linux-${{ matrix.goarch }}" \
+            -o "${GITHUB_WORKSPACE}/dist-singbox/${{ matrix.bin }}" \
             ./cmd/sing-box
-      - uses: actions/upload-artifact@v4
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@v4
         with:
-          name: sing-box-v1.13.14-v2ray-linux-${{ matrix.goarch }}
+          subject-path: dist-singbox/${{ matrix.bin }}
+
+      - name: Upload sing-box Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
           path: dist-singbox/*
 
-  docker-images:
+  docker-build-test:
+    name: Docker Build & Test (${{ matrix.arch }})
     needs: quality-gates
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            os: ubuntu-24.04-arm
+            platform: linux/arm64
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local server test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile.server
+          platforms: ${{ matrix.platform }}
+          load: true
+          provenance: false
+          tags: aethergate-server:test-${{ matrix.arch }}
+          cache-from: type=gha,scope=docker-server-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-server-${{ matrix.arch }}
+
+      - name: Smoke test server container
+        run: bash scripts/test-docker-server.sh "aethergate-server:test-${{ matrix.arch }}"
+
+      - name: Build local agent test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile.agent
+          platforms: ${{ matrix.platform }}
+          load: true
+          provenance: false
+          tags: aethergate-agent:test-${{ matrix.arch }}
+          cache-from: type=gha,scope=docker-agent-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-agent-${{ matrix.arch }}
+
+      - name: Smoke test agent container
+        run: bash scripts/test-docker-agent.sh "aethergate-agent:test-${{ matrix.arch }}"
+
+      - name: Resolve lowercase GHCR owner
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        id: meta
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Smoke Test Server Scratch Container (amd64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile.server
-          load: true
-          tags: aethergate-server:test
-      - run: bash scripts/test-docker-server.sh aethergate-server:test
-      - name: Smoke Test Agent Scratch Container (amd64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile.agent
-          load: true
-          tags: aethergate-agent:test
-      - run: bash scripts/test-docker-agent.sh aethergate-agent:test
-      - name: Build & Push Multi-Arch Server Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile.server
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/aethergate-server:latest
-            ghcr.io/${{ github.repository_owner }}/aethergate-server:${{ github.sha }}
-      - name: Build & Push Multi-Arch Agent Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile.agent
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/aethergate-agent:latest
-            ghcr.io/${{ github.repository_owner }}/aethergate-agent:${{ github.sha }}
 
-  release:
-    needs: [build-binaries, build-singbox, docker-images]
-    if: startsWith(github.ref, 'refs/tags/v')
+      - name: Push tested server image by digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        id: push_server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile.server
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-server,push-by-digest=true,push=true
+          cache-from: type=gha,scope=docker-server-${{ matrix.arch }}
+
+      - name: Push tested agent image by digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        id: push_agent
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile.agent
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-agent,push-by-digest=true,push=true
+          cache-from: type=gha,scope=docker-agent-${{ matrix.arch }}
+
+      - name: Save tested digests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p digests
+          printf '%s' "${{ steps.push_server.outputs.digest }}" > "digests/server-digest-${{ matrix.arch }}.txt"
+          printf '%s' "${{ steps.push_agent.outputs.digest }}" > "digests/agent-digest-${{ matrix.arch }}.txt"
+
+      - name: Upload digest artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    needs: [build-binaries, build-singbox]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.gen_tag.outputs.release_tag }}
+
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: "*linux*|*windows*|*macos*|singbox*"
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+          path: dist
+
+      - name: Generate Version Tag
+        id: gen_tag
+        run: |
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/aethergate-server/Cargo.toml | head -n 1)
+          if [ -z "$CARGO_VERSION" ]; then
+            CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          fi
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-6)
+          RELEASE_TAG="v${CARGO_VERSION:-0.1.0}-b${{ github.run_number }}-${SHORT_SHA}"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Publish Release Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          cat << EOF > release_notes.md
+          ### Æthergate 发布版本: ${RELEASE_TAG}
+
+          #### 服务端与节点二进制下载
+          - **Server Linux x64 (musl)**: \`aethergate-server-linux-x64\`
+          - **Server Linux ARM64 (musl)**: \`aethergate-server-linux-arm64\`
+          - **Server Windows x64**: \`aethergate-server-windows-x64.exe\`
+          - **Server macOS ARM64**: \`aethergate-server-macos-arm64\`
+          - **Agent Linux x64 (musl)**: \`aethergate-agent-linux-x64\`
+          - **Agent Linux ARM64 (musl)**: \`aethergate-agent-linux-arm64\`
+          - **sing-box v1.13.14 (with_v2ray_api) x64**: \`sing-box-v1.13.14-v2ray-linux-amd64\`
+          - **sing-box v1.13.14 (with_v2ray_api) ARM64**: \`sing-box-v1.13.14-v2ray-linux-arm64\`
+
+          #### Docker 多架构镜像 (amd64 / arm64)
+          - **Server**: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aethergate-server:${RELEASE_TAG}\`
+          - **Agent**: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aethergate-agent:${RELEASE_TAG}\`
+
+          **变更摘要**:
+          > ${COMMIT_MSG}
+          EOF
+
+          gh release create "${RELEASE_TAG}" \
+            dist/* \
+            --title "${RELEASE_TAG}" \
+            --notes-file release_notes.md
+
+      - name: Cleanup Older Releases (Keep Latest 5)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 100 --json tagName --jq '.[5:][].tagName' | while read -r old_tag; do
+            if [ -n "$old_tag" ]; then
+              echo "Deleting old release and tag: $old_tag"
+              gh release delete "$old_tag" --yes --cleanup-tag || true
+            fi
+          done
+
+  docker-publish:
+    name: Publish Multi-Arch Docker Images
+    needs: [docker-build-test, publish]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Download tested digests
+        uses: actions/download-artifact@v4
         with:
-          files: artifacts/*
-          generate_release_notes: true
+          pattern: docker-digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Resolve lowercase GHCR owner
+        id: meta
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble multi-arch server manifest
+        id: manifest_server
+        env:
+          RELEASE_TAG: ${{ needs.publish.outputs.release_tag }}
+          IMAGE: ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-server
+        run: |
+          AMD64_DIGEST="$(cat digests/server-digest-amd64.txt)"
+          ARM64_DIGEST="$(cat digests/server-digest-arm64.txt)"
+
+          docker buildx imagetools create -t "${IMAGE}:${RELEASE_TAG}" \
+            "${IMAGE}@${AMD64_DIGEST}" \
+            "${IMAGE}@${ARM64_DIGEST}"
+
+          docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${RELEASE_TAG}"
+          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate server container provenance attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-server
+          subject-digest: ${{ steps.manifest_server.outputs.digest }}
+          push-to-registry: true
+
+      - name: Assemble multi-arch agent manifest
+        id: manifest_agent
+        env:
+          RELEASE_TAG: ${{ needs.publish.outputs.release_tag }}
+          IMAGE: ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-agent
+        run: |
+          AMD64_DIGEST="$(cat digests/agent-digest-amd64.txt)"
+          ARM64_DIGEST="$(cat digests/agent-digest-arm64.txt)"
+
+          docker buildx imagetools create -t "${IMAGE}:${RELEASE_TAG}" \
+            "${IMAGE}@${AMD64_DIGEST}" \
+            "${IMAGE}@${ARM64_DIGEST}"
+
+          docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${RELEASE_TAG}"
+          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate agent container provenance attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-agent
+          subject-digest: ${{ steps.manifest_agent.outputs.digest }}
+          push-to-registry: true

@@ -1,19 +1,150 @@
-name: Deploy Server
+name: Deploy to Server
 
 on:
+  workflow_run:
+    workflows: ["CI & Release Pipeline"]
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to deploy (leave empty for latest)"
+        required: false
+        default: ""
 
 jobs:
   deploy:
+    name: Deploy Server Release to ARTS-CN-PKX-01
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' && github.event.workflow_run.head_branch == 'main' && vars.ENABLE_AUTO_DEPLOY == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            cd /opt/aethergate
-            docker compose -f compose.server.yaml pull
-            docker compose -f compose.server.yaml up -d --remove-orphans
+          fetch-depth: 1
+
+      - name: Prepare deployment payload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p deploy_pkg/examples
+          if [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+          fi
+          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+            echo "No release found via CLI; defaulting to latest"
+            TAG="latest"
+          fi
+          echo "DEPLOY_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "Deploying release tag: ${TAG}"
+
+          # Synchronize latest reference template examples (does not overwrite live config.server.toml)
+          cp deploy/server/compose.yaml deploy_pkg/examples/compose.server.example.yaml
+          cp config.server.example.toml deploy_pkg/examples/config.server.example.toml
+
+      - name: Atomic Docker Compose Deploy with Health Probe & Rollback
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/docker/aethergate' }}
+          DEPLOY_HEALTH_URL: ${{ vars.DEPLOY_HEALTH_URL || 'http://127.0.0.1:8080/healthz' }}
+          DEPLOY_TAG: ${{ env.DEPLOY_TAG }}
+          CR_PAT: ${{ secrets.GHCR_TOKEN || '' }}
+          CR_USER: ${{ github.actor }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o StrictHostKeyChecking=accept-new"
+
+          # Ensure deployment directory exists and copy reference examples
+          ssh ${SSH_OPTS} -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${DEPLOY_DIR}/examples'"
+          scp -r -C ${SSH_OPTS} -P "$DEPLOY_PORT" deploy_pkg/examples/* "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/examples/"
+
+          # Optional GHCR authentication (for private registry mirrors)
+          if [ -n "${CR_PAT}" ]; then
+            printf '%s\n' "${CR_PAT}" | ssh ${SSH_OPTS} -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "docker login ghcr.io -u '${CR_USER}' --password-stdin >/dev/null 2>&1"
+          fi
+
+          # Execute atomic compose pull, recreate container, health check and automatic rollback
+          ssh ${SSH_OPTS} -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "${DEPLOY_DIR}" "${DEPLOY_TAG}" "${DEPLOY_HEALTH_URL}" << 'EOS'
+            set -euo pipefail
+            DEPLOY_DIR="$1"
+            TARGET_TAG="$2"
+            DEPLOY_HEALTH_URL="$3"
+
+            cd "${DEPLOY_DIR}"
+
+            COMPOSE_FILE="docker-compose.yml"
+            if [ ! -f "${COMPOSE_FILE}" ]; then
+              if [ -f "compose.yaml" ]; then
+                COMPOSE_FILE="compose.yaml"
+              elif [ -f "compose.server.yaml" ]; then
+                COMPOSE_FILE="compose.server.yaml"
+              else
+                echo "Missing docker-compose.yml or compose.yaml in ${DEPLOY_DIR}" >&2
+                exit 1
+              fi
+            fi
+
+            # 1. Capture previous tag from .env for safe rollback
+            PREV_TAG="latest"
+            if [ -f .env ]; then
+              PREV_TAG=$(grep -E '^AETHERGATE_TAG=' .env | tail -n 1 | cut -d= -f2- || echo "latest")
+              [ -z "${PREV_TAG}" ] && PREV_TAG="latest"
+            fi
+            echo "Current active tag: ${PREV_TAG}, Target deploy tag: ${TARGET_TAG}"
+
+            set_tag() {
+              local tag="$1"
+              touch .env
+              if grep -qE '^AETHERGATE_TAG=' .env; then
+                sed -i "s#^AETHERGATE_TAG=.*#AETHERGATE_TAG=${tag}#" .env
+              else
+                echo "AETHERGATE_TAG=${tag}" >> .env
+              fi
+            }
+
+            set_tag "${TARGET_TAG}"
+
+            # 2. Pull server image and restart service container
+            echo "Pulling image for tag ${TARGET_TAG}..."
+            docker compose -f "${COMPOSE_FILE}" pull aethergate-server
+            echo "Recreating container..."
+            docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans aethergate-server
+
+            # 3. Probe HTTP health check endpoint
+            echo "Probing health check endpoint: ${DEPLOY_HEALTH_URL}..."
+            PROBE_SUCCESS=false
+            for i in $(seq 1 15); do
+              if curl -fsS "${DEPLOY_HEALTH_URL}" >/dev/null 2>&1; then
+                echo "Health probe succeeded on attempt ${i}"
+                PROBE_SUCCESS=true
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$PROBE_SUCCESS" = "true" ]; then
+              echo "Deployment succeeded! Pruning dangling images..."
+              docker image prune -f >/dev/null 2>&1 || true
+              exit 0
+            fi
+
+            # 4. Probe failed -> rollback to previous tag
+            echo "Health probe failed! Rolling back to ${PREV_TAG}..." >&2
+            set_tag "${PREV_TAG}"
+            docker compose -f "${COMPOSE_FILE}" pull aethergate-server || true
+            docker compose -f "${COMPOSE_FILE}" up -d aethergate-server || true
+            echo "=== Container logs (last 60 lines) ===" >&2
+            docker compose -f "${COMPOSE_FILE}" logs --tail=60 aethergate-server || true
+            exit 1
+          EOS

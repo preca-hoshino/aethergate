@@ -1,31 +1,39 @@
+# ==============================================================================
+# Æthergate Server Configuration (config.server.toml)
+# ==============================================================================
+
 [server]
-bind = "0.0.0.0:8080"
-public_base_url = "https://panel.example.com"
-# 32-byte hex AES-256-GCM master key (or set AETHERGATE_MASTER_KEY_HEX)
-master_key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# Listen address inside container (0.0.0.0:8080 mapped to 127.0.0.1:8080 by Compose)
+listen_addr = "0.0.0.0:8080"
+# Public HTTPS URL used for OIDC callback and subscription links
+public_base_url = "https://proxy.restart.org.cn"
+# Enable secure cookies when served over HTTPS
+cookie_secure = true
 
 [database]
-url = "postgres://aethergate:password@127.0.0.1:5432/aethergate"
-max_connections = 16
-
-[stats]
-# Defines natural month 1st 00:00:00 reset boundary
-timezone = "Asia/Shanghai"
-eco_interval_sec = 30
-realtime_interval_sec = 5
-heartbeat_timeout_sec = 180
-
-[oidc]
-issuer_url = "https://your-tenant.logto.app/oidc"
-client_id = "your-client-id"
-client_secret = "your-client-secret"
-# In read-only container mode, prefer:
-# client_secret_file = "/config/secrets/oidc-client-secret"
-bootstrap_admin_emails = ["admin@example.com"]
-admin_role_claim = "roles"
-admin_role_value = "aethergate:admin"
+# PostgreSQL connection URL (on ARTS-CN-PKX-01 inside 1panel-network, use postgresql:5432)
+url = "postgres://aethergate:CHANGE_ME_PASSWORD@postgresql:5432/aethergate"
+max_connections = 20
 
 [security]
-require_open_api_hmac = false
-cookie_secure = true
+# 32-byte AES-256-GCM master key as 64 hex characters (used to encrypt node HMAC secrets)
+master_key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 session_ttl_hours = 168
+hmac_max_skew_secs = 60
+
+[stats]
+# Timezone for 1st-of-month natural boundary calculation
+timezone = "Asia/Shanghai"
+node_offline_secs = 95
+
+[oidc]
+# Keep false initially until Logto application credentials and DNS reverse-proxy are ready
+enabled = false
+provider_name = "Logto / OIDC"
+issuer = "https://pass.restart.org.cn/oidc"
+client_id = "change-me-logto-client-id"
+client_secret = "change-me-logto-client-secret"
+scopes = "openid profile email"
+# Automatically promoted to admin upon first login
+bootstrap_admin_subjects = ["y1cwe4ybamzu"]
+bootstrap_admin_emails = []

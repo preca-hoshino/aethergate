@@ -1,0 +1,51 @@
+# ==============================================================================
+# Æthergate Server — sing-box Control Plane & Management Portal
+# ==============================================================================
+# Usage on ARTS-CN-PKX-01:
+#   docker compose pull aethergate-server
+#   docker compose up -d --remove-orphans aethergate-server
+#   docker compose logs -f aethergate-server
+# ==============================================================================
+
+services:
+  aethergate-server:
+    image: ghcr.nju.edu.cn/${AETHERGATE_IMAGE_OWNER:-preca-hoshino}/aethergate-server:${AETHERGATE_TAG:-latest}
+    container_name: aethergate-server
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # ─── Port mapping (loopback only, reverse-proxied by OpenResty / Nginx) ───
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - 1panel-network
+    # ─── Hardened container runtime (scratch non-root minimal container) ───
+    user: "65532:65532"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    # ─── Mount configuration and host timezone / CA certificates ───
+    volumes:
+      - ./config:/config:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+      - /usr/local/share/ca-certificates:/usr/local/share/ca-certificates:ro
+    # ─── Resource limits and logging rotation ───
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  1panel-network:
+    external: true
