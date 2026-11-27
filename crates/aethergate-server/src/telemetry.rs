@@ -66,24 +66,8 @@ pub async fn ingest_telemetry_batch(
     }
 
     let stat_month = stat_month_for_timestamp(batch.window_end, state.stats_tz);
-    let usernames: Vec<String> = batch
-        .user_samples
-        .iter()
-        .map(|s| s.proxy_username.clone())
-        .collect();
-
-    let user_rows = if usernames.is_empty() {
-        Vec::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, proxy_username FROM users WHERE proxy_username = ANY($1)",
-        )
-        .bind(&usernames)
-        .fetch_all(&mut *tx)
-        .await?
-    };
-    let user_map: HashMap<String, Uuid> =
-        user_rows.into_iter().map(|(id, name)| (name, id)).collect();
+    let (user_map, owner_map, has_child_logical_nodes) =
+        load_telemetry_lookups(&mut tx, node_id, batch).await?;
 
     let mut node_uplink: i64 = 0;
     let mut node_downlink: i64 = 0;
@@ -101,13 +85,15 @@ pub async fn ingest_telemetry_batch(
         node_peak_up = node_peak_up.max(up_bps);
         node_peak_down = node_peak_down.max(down_bps);
 
-        if let Some(&user_id) = user_map.get(&sample.proxy_username) {
+        if let Some((user_id, account_type)) = user_map.get(&sample.proxy_username)
+            && account_type != "relay"
+        {
             upsert_user_monthly_and_raw(
                 &mut tx,
                 stat_month,
                 batch.window_end,
                 node_id,
-                user_id,
+                *user_id,
                 up,
                 down,
                 up_bps,
@@ -117,7 +103,35 @@ pub async fn ingest_telemetry_batch(
         }
     }
 
-    if node_uplink > 0 || node_downlink > 0 {
+    let mut per_logical_node: HashMap<Uuid, (i64, i64)> = HashMap::new();
+    for slice in &batch.inbound_slices {
+        let target_node_id = owner_map
+            .get(&slice.inbound_tag)
+            .copied()
+            .unwrap_or(node_id);
+        let up = i64::try_from(slice.uplink_bytes).unwrap_or(i64::MAX);
+        let down = i64::try_from(slice.downlink_bytes).unwrap_or(i64::MAX);
+        let entry = per_logical_node.entry(target_node_id).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(up);
+        entry.1 = entry.1.saturating_add(down);
+
+        upsert_inbound_monthly_and_raw(
+            &mut tx,
+            stat_month,
+            batch.window_end,
+            target_node_id,
+            slice,
+        )
+        .await?;
+    }
+
+    if has_child_logical_nodes {
+        for (logical_id, (up, down)) in per_logical_node {
+            if up > 0 || down > 0 {
+                upsert_node_monthly(&mut tx, stat_month, logical_id, up, down, 0, 0).await?;
+            }
+        }
+    } else if node_uplink > 0 || node_downlink > 0 {
         upsert_node_monthly(
             &mut tx,
             stat_month,
@@ -130,14 +144,55 @@ pub async fn ingest_telemetry_batch(
         .await?;
     }
 
-    for slice in &batch.inbound_slices {
-        upsert_inbound_monthly_and_raw(&mut tx, stat_month, batch.window_end, node_id, slice)
-            .await?;
-    }
-
     tx.commit().await?;
     state.mark_ws_dirty();
     Ok(true)
+}
+
+/// Resolved user and inbound-owner lookup maps for telemetry ingestion.
+type TelemetryLookups = (HashMap<String, (Uuid, String)>, HashMap<String, Uuid>, bool);
+
+/// Loads user account mappings and inbound-to-logical-node mappings inside the transaction.
+async fn load_telemetry_lookups(
+    tx: &mut Transaction<'_, Postgres>,
+    node_id: Uuid,
+    batch: &TelemetryBatchRequest,
+) -> Result<TelemetryLookups, sqlx::Error> {
+    let usernames: Vec<String> = batch
+        .user_samples
+        .iter()
+        .map(|s| s.proxy_username.clone())
+        .collect();
+
+    let user_rows = if usernames.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT id, proxy_username, account_type FROM users WHERE proxy_username = ANY($1)",
+        )
+        .bind(&usernames)
+        .fetch_all(&mut **tx)
+        .await?
+    };
+    let user_map: HashMap<String, (Uuid, String)> = user_rows
+        .into_iter()
+        .map(|(id, name, account_type)| (name, (id, account_type)))
+        .collect();
+
+    let inbound_owners = sqlx::query_as::<_, (String, Uuid)>(
+        r"
+        SELECT tag, node_id
+        FROM node_inbounds
+        WHERE node_id = $1
+           OR node_id IN (SELECT id FROM nodes WHERE parent_node_id = $1)
+        ",
+    )
+    .bind(node_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let owner_map: HashMap<String, Uuid> = inbound_owners.into_iter().collect();
+    let has_child_logical_nodes = owner_map.values().any(|&owner| owner != node_id);
+    Ok((user_map, owner_map, has_child_logical_nodes))
 }
 
 /// Upserts `user_monthly_traffic`, `user_node_monthly_traffic`, and inserts a raw sample.

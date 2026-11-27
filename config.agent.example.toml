@@ -1,21 +1,15 @@
-[control_plane]
-base_url = "https://panel.example.com"
+# Æthergate Node Agent Configuration (flat TOML matching AgentConfig)
+
 node_id = "00000000-0000-0000-0000-000000000000"
-api_token = "ag_node_live_replace_me"
-# Optional in read-only containers:
-# api_token_file = "/etc/aethergate/secrets/api-token"
-hmac_secret = "ag_hmac_replace_me"
-# hmac_secret_file = "/etc/aethergate/secrets/hmac-secret"
-enable_hmac = true
-request_timeout_sec = 10
+hmac_secret = "replace-with-node-hmac-secret"
+server_url = "https://panel.example.com"
 
-[singbox]
-binary_path = "/usr/local/bin/sing-box"
-config_dir = "/var/lib/aethergate/configs"
-v2ray_api_listen = "127.0.0.1:10085"
-clash_api_listen = "127.0.0.1:19090"
-
-[telemetry]
-sample_interval_sec = 2
+singbox_bin = "/usr/local/bin/sing-box"
+singbox_config_path = "/etc/aethergate/sing-box.json"
+cert_dir = "/etc/aethergate/certs"
 wal_dir = "/var/lib/aethergate/wal"
-wal_max_size_mb = 50
+
+v2ray_api_addr = "127.0.0.1:10085"
+clash_api_addr = "http://127.0.0.1:19090"
+clash_secret = "change-me-local-clash-secret"
+sample_interval_secs = 2

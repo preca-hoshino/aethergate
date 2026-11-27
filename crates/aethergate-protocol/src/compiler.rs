@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::protocol::{
-    AuthorizedUserCredential, InboundProtocolConfig, NodeInboundSpec, NodeTemplate, TlsProfile,
-    TransportLayer,
+    AuthorizedUserCredential, DnsRouteProfile, InboundProtocolConfig, NodeInboundSpec,
+    NodeTemplate, OutboundSpec, TlsProfile, TransportLayer,
 };
 
 /// Errors produced during port validation or `sing-box` JSON compilation.
@@ -197,18 +197,45 @@ pub fn compile_singbox_config(
         .as_deref()
         .unwrap_or(&tls.key_path);
 
+    let dns_route: DnsRouteProfile = if template.dns_route.is_null() {
+        DnsRouteProfile::default()
+    } else {
+        serde_json::from_value(template.dns_route.clone()).unwrap_or_default()
+    };
+
     let mut compiled_inbounds = Vec::with_capacity(sorted_inbounds.len());
     let mut stat_inbound_tags = Vec::with_capacity(sorted_inbounds.len());
+    let mut inbound_route_rules: Vec<Value> = Vec::new();
 
     for inbound in sorted_inbounds {
         stat_inbound_tags.push(inbound.tag.clone());
+        let inbound_users: Vec<&AuthorizedUserCredential> =
+            if let Some(allowed) = &inbound.allowed_usernames {
+                sorted_users
+                    .iter()
+                    .copied()
+                    .filter(|u| allowed.iter().any(|name| name == &u.proxy_username))
+                    .collect()
+            } else {
+                sorted_users.clone()
+            };
+
         compiled_inbounds.push(compile_single_inbound(
             inbound,
             tls,
             cert_path,
             key_path,
-            &sorted_users,
+            &inbound_users,
         ));
+
+        if let Some(out_tag) = inbound.outbound_tag.as_deref().filter(|t| !t.is_empty())
+            && out_tag != "direct"
+        {
+            inbound_route_rules.push(json!({
+                "inbound": [inbound.tag],
+                "outbound": out_tag
+            }));
+        }
     }
 
     let stat_users: Vec<&str> = sorted_users
@@ -216,33 +243,24 @@ pub fn compile_singbox_config(
         .map(|u| u.proxy_username.as_str())
         .collect();
 
+    let (compiled_outbounds, stat_outbound_tags) = compile_outbounds(&template.outbounds);
+    let dns_block = compile_dns_block(&dns_route);
+    let route_block = compile_route_block(&dns_route, inbound_route_rules);
+
     Ok(json!({
         "log": {
             "disabled": false,
             "level": "info",
             "timestamp": true
         },
-        "dns": {
-            "servers": [
-                {
-                    "type": "local",
-                    "tag": "dns-local"
-                },
-                {
-                    "type": "udp",
-                    "tag": "dns-bootstrap",
-                    "server": "1.1.1.1"
-                }
-            ],
-            "final": "dns-local"
-        },
+        "dns": dns_block,
         "experimental": {
             "v2ray_api": {
                 "listen": overrides.v2ray_api_listen,
                 "stats": {
                     "enabled": true,
                     "inbounds": stat_inbound_tags,
-                    "outbounds": ["direct"],
+                    "outbounds": stat_outbound_tags,
                     "users": stat_users
                 }
             },
@@ -252,25 +270,162 @@ pub fn compile_singbox_config(
             }
         },
         "inbounds": compiled_inbounds,
-        "outbounds": [
-            {
-                "type": "direct",
-                "tag": "direct"
-            }
-        ],
-        "route": {
-            "rules": [
-                {
-                    "action": "sniff"
-                },
-                {
-                    "ip_is_private": true,
-                    "action": "reject"
-                }
-            ],
-            "final": "direct"
-        }
+        "outbounds": compiled_outbounds,
+        "route": route_block
     }))
+}
+
+/// Compiles the `dns` block using [`DnsRouteProfile`].
+fn compile_dns_block(dns_route: &DnsRouteProfile) -> Value {
+    let mut bootstrap = serde_json::Map::new();
+    bootstrap.insert("tag".to_string(), json!("dns-bootstrap"));
+    let server = dns_route.dns_server.as_deref().unwrap_or("1.1.1.1").trim();
+    if let Some(host_port) = server.strip_prefix("https://") {
+        let host = host_port
+            .split('/')
+            .next()
+            .unwrap_or("223.5.5.5")
+            .split(':')
+            .next()
+            .unwrap_or("223.5.5.5");
+        bootstrap.insert("type".to_string(), json!("https"));
+        bootstrap.insert("server".to_string(), json!(host));
+        if let Some(sni) = dns_route
+            .dns_server_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            bootstrap.insert(
+                "tls".to_string(),
+                json!({ "enabled": true, "server_name": sni }),
+            );
+        }
+    } else if let Some(host) = server.strip_prefix("tls://") {
+        bootstrap.insert("type".to_string(), json!("tls"));
+        bootstrap.insert("server".to_string(), json!(host));
+        if let Some(sni) = dns_route
+            .dns_server_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            bootstrap.insert(
+                "tls".to_string(),
+                json!({ "enabled": true, "server_name": sni }),
+            );
+        }
+    } else {
+        bootstrap.insert("type".to_string(), json!("udp"));
+        bootstrap.insert("server".to_string(), json!(server));
+    }
+
+    let mut dns_obj = serde_json::Map::new();
+    dns_obj.insert(
+        "servers".to_string(),
+        json!([
+            {
+                "type": "local",
+                "tag": "dns-local"
+            },
+            Value::Object(bootstrap)
+        ]),
+    );
+    dns_obj.insert("final".to_string(), json!("dns-local"));
+    if let Some(strategy) = dns_route.dns_strategy.as_deref().filter(|s| !s.is_empty()) {
+        dns_obj.insert("strategy".to_string(), json!(strategy));
+    }
+    Value::Object(dns_obj)
+}
+
+/// Compiles `outbounds` (always includes `"direct"`, plus any custom [`OutboundSpec`]s).
+fn compile_outbounds(custom: &[OutboundSpec]) -> (Vec<Value>, Vec<String>) {
+    let mut outbounds = vec![json!({
+        "type": "direct",
+        "tag": "direct"
+    })];
+    let mut tags = vec!["direct".to_string()];
+
+    for spec in custom {
+        match spec {
+            OutboundSpec::Direct {
+                tag,
+                bind_interface,
+                routing_mark,
+            } => {
+                if tag == "direct" {
+                    continue;
+                }
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".to_string(), json!("direct"));
+                obj.insert("tag".to_string(), json!(tag));
+                if let Some(iface) = bind_interface.as_deref().filter(|s| !s.is_empty()) {
+                    obj.insert("bind_interface".to_string(), json!(iface));
+                }
+                if let Some(mark) = routing_mark {
+                    obj.insert("routing_mark".to_string(), json!(mark));
+                }
+                tags.push(tag.clone());
+                outbounds.push(Value::Object(obj));
+            }
+            OutboundSpec::Hysteria2 {
+                tag,
+                server,
+                server_port,
+                password,
+                server_name,
+                insecure,
+                alpn,
+                bind_interface,
+                routing_mark,
+            } => {
+                let mut tls_obj = serde_json::Map::new();
+                tls_obj.insert("enabled".to_string(), json!(true));
+                tls_obj.insert("insecure".to_string(), json!(insecure));
+                if let Some(sni) = server_name.as_deref().filter(|s| !s.is_empty()) {
+                    tls_obj.insert("server_name".to_string(), json!(sni));
+                }
+                if !alpn.is_empty() {
+                    tls_obj.insert("alpn".to_string(), json!(alpn));
+                }
+
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".to_string(), json!("hysteria2"));
+                obj.insert("tag".to_string(), json!(tag));
+                obj.insert("server".to_string(), json!(server));
+                obj.insert("server_port".to_string(), json!(server_port));
+                obj.insert("password".to_string(), json!(password));
+                obj.insert("tls".to_string(), Value::Object(tls_obj));
+                if let Some(iface) = bind_interface.as_deref().filter(|s| !s.is_empty()) {
+                    obj.insert("bind_interface".to_string(), json!(iface));
+                }
+                if let Some(mark) = routing_mark {
+                    obj.insert("routing_mark".to_string(), json!(mark));
+                }
+                tags.push(tag.clone());
+                outbounds.push(Value::Object(obj));
+            }
+        }
+    }
+
+    (outbounds, tags)
+}
+
+/// Compiles `route` including `default_domain_resolver`, `hijack-dns`, per-inbound rules, and private-IP policy.
+fn compile_route_block(dns_route: &DnsRouteProfile, inbound_rules: Vec<Value>) -> Value {
+    let mut rules = vec![json!({ "action": "sniff" })];
+    if dns_route.hijack_dns {
+        rules.push(json!({ "protocol": "dns", "action": "hijack-dns" }));
+    }
+    rules.extend(inbound_rules);
+    if dns_route.reject_private_ip {
+        rules.push(json!({ "ip_is_private": true, "action": "reject" }));
+    }
+
+    json!({
+        "rules": rules,
+        "final": "direct",
+        "auto_detect_interface": dns_route.auto_detect_interface,
+        "default_domain_resolver": "dns-local"
+    })
 }
 
 /// Renders a single protocol inbound block according to `sing-box` 1.12+/1.13+ schema.
@@ -304,6 +459,8 @@ fn compile_vless_reality(inbound: &NodeInboundSpec, users: &[&AuthorizedUserCred
         private_key,
         short_ids,
         flow,
+        alpn,
+        max_time_difference,
         ..
     } = &inbound.protocol_config
     else {
@@ -320,6 +477,30 @@ fn compile_vless_reality(inbound: &NodeInboundSpec, users: &[&AuthorizedUserCred
             })
         })
         .collect();
+
+    let mut reality_obj = serde_json::Map::new();
+    reality_obj.insert("enabled".to_string(), json!(true));
+    reality_obj.insert(
+        "handshake".to_string(),
+        json!({
+            "server": handshake_server,
+            "server_port": handshake_port
+        }),
+    );
+    reality_obj.insert("private_key".to_string(), json!(private_key));
+    reality_obj.insert("short_id".to_string(), json!(short_ids));
+    if let Some(mtd) = max_time_difference.as_deref().filter(|s| !s.is_empty()) {
+        reality_obj.insert("max_time_difference".to_string(), json!(mtd));
+    }
+
+    let mut tls_obj = serde_json::Map::new();
+    tls_obj.insert("enabled".to_string(), json!(true));
+    tls_obj.insert("server_name".to_string(), json!(server_name));
+    if !alpn.is_empty() {
+        tls_obj.insert("alpn".to_string(), json!(alpn));
+    }
+    tls_obj.insert("reality".to_string(), Value::Object(reality_obj));
+
     json!({
         "type": "vless",
         "tag": inbound.tag,
@@ -327,19 +508,7 @@ fn compile_vless_reality(inbound: &NodeInboundSpec, users: &[&AuthorizedUserCred
         "listen_port": inbound.listen_port,
         "tcp_fast_open": true,
         "users": vless_users,
-        "tls": {
-            "enabled": true,
-            "server_name": server_name,
-            "reality": {
-                "enabled": true,
-                "handshake": {
-                    "server": handshake_server,
-                    "server_port": handshake_port
-                },
-                "private_key": private_key,
-                "short_id": short_ids
-            }
-        }
+        "tls": Value::Object(tls_obj)
     })
 }
 
@@ -389,8 +558,11 @@ fn compile_hysteria2(
     if let Some(obfs_cfg) = obfs {
         obj.insert("obfs".to_string(), json!(obfs_cfg));
     }
-    if let Some(masq) = masquerade.as_deref().filter(|s| !s.is_empty()) {
-        obj.insert("masquerade".to_string(), json!(masq));
+    if let Some(masq) = masquerade
+        .as_ref()
+        .filter(|v| !v.is_null() && v.as_str() != Some(""))
+    {
+        obj.insert("masquerade".to_string(), masq.clone());
     }
     obj.insert("users".to_string(), json!(hy2_users));
     obj.insert(
@@ -400,7 +572,7 @@ fn compile_hysteria2(
     Value::Object(obj)
 }
 
-/// Compiles a TUIC v5 inbound block.
+/// Compiles a TUIC v5 inbound block (note: `udp_relay_mode` is client-outbound-only in `sing-box` 1.12+).
 fn compile_tuic(
     inbound: &NodeInboundSpec,
     tls: &TlsProfile,
@@ -410,11 +582,11 @@ fn compile_tuic(
 ) -> Value {
     let InboundProtocolConfig::Tuic {
         congestion_control,
-        udp_relay_mode,
         zero_rtt_handshake,
         auth_timeout,
         heartbeat,
         alpn,
+        ..
     } = &inbound.protocol_config
     else {
         return json!({});
@@ -436,7 +608,6 @@ fn compile_tuic(
         "listen": inbound.listen,
         "listen_port": inbound.listen_port,
         "congestion_control": congestion_control,
-        "udp_relay_mode": udp_relay_mode,
         "zero_rtt_handshake": zero_rtt_handshake,
         "auth_timeout": auth_timeout,
         "heartbeat": heartbeat,
@@ -555,8 +726,12 @@ mod tests {
                     short_ids: vec!["0123456789abcdef".to_string()],
                     flow: "xtls-rprx-vision".to_string(),
                     fingerprint: "chrome".to_string(),
+                    alpn: vec!["h2".to_string(), "http/1.1".to_string()],
+                    max_time_difference: Some("30s".to_string()),
                 },
                 sort_order: 1,
+                outbound_tag: None,
+                allowed_usernames: None,
             },
             NodeInboundSpec {
                 id: Uuid::new_v4(),
@@ -571,10 +746,12 @@ mod tests {
                     down_mbps: Some(500),
                     ignore_client_bandwidth: false,
                     obfs: None,
-                    masquerade: Some("https://bing.com".to_string()),
+                    masquerade: Some(json!("https://bing.com")),
                     alpn: vec!["h3".to_string()],
                 },
                 sort_order: 2,
+                outbound_tag: None,
+                allowed_usernames: None,
             },
             NodeInboundSpec {
                 id: Uuid::new_v4(),
@@ -593,6 +770,8 @@ mod tests {
                     alpn: vec!["h3".to_string()],
                 },
                 sort_order: 3,
+                outbound_tag: None,
+                allowed_usernames: None,
             },
             NodeInboundSpec {
                 id: Uuid::new_v4(),
@@ -606,6 +785,8 @@ mod tests {
                     padding_scheme: vec!["stop=8".to_string()],
                 },
                 sort_order: 4,
+                outbound_tag: None,
+                allowed_usernames: None,
             },
         ]
     }
@@ -615,6 +796,7 @@ mod tests {
         let template = NodeTemplate {
             inbounds: sample_inbounds(),
             dns_route: json!({}),
+            outbounds: vec![],
         };
         let users = vec![AuthorizedUserCredential {
             user_id: Uuid::new_v4(),
@@ -634,6 +816,8 @@ mod tests {
             assert_eq!(cfg["inbounds"].as_array().map(Vec::len), Some(4));
             assert_eq!(cfg["dns"]["servers"][0]["type"], "local");
             assert_eq!(cfg["route"]["rules"][0]["action"], "sniff");
+            assert_eq!(cfg["route"]["default_domain_resolver"], "dns-local");
+            assert!(cfg["inbounds"][2].get("udp_relay_mode").is_none());
             assert_eq!(
                 cfg["experimental"]["v2ray_api"]["stats"]["users"][0],
                 "u_alice01"

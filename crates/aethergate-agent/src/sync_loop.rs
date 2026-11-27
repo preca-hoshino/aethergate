@@ -209,6 +209,8 @@ struct AgentRuntime {
     user_revision: i64,
     /// Current cadence mode.
     cadence_mode: ReportCadenceMode,
+    /// Last observed external certificate modification timestamp.
+    last_cert_mtime: Option<std::time::SystemTime>,
     /// Accumulated telemetry buffer.
     buffer: TelemetryBuffer,
     /// Last active connections count.
@@ -232,6 +234,7 @@ pub async fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
     let mut template = NodeTemplate {
         inbounds: Vec::new(),
         dns_route: serde_json::Value::Null,
+        outbounds: Vec::new(),
     };
     let mut tls_profile = TlsProfile::default();
     let mut config_revision = verify.config_revision;
@@ -262,6 +265,7 @@ pub async fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         config_revision,
         user_revision,
         cadence_mode: verify.cadence_mode,
+        last_cert_mtime: None,
         buffer: TelemetryBuffer::new(Utc::now()),
         last_active_conns: 0,
     };
@@ -286,7 +290,7 @@ pub async fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            () = shutdown_signal() => {
                 tracing::info!("agent shutting down");
                 let _ = runtime.flush_telemetry(true).await;
                 runtime.supervisor.stop().await;
@@ -312,6 +316,7 @@ pub async fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 if (now - last_status_flush).num_seconds() >= cadence_secs {
                     last_status_flush = now;
                     runtime.flush_status().await;
+                    runtime.check_external_cert_reload().await;
                 }
             }
         }
@@ -323,15 +328,24 @@ pub async fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
 impl AgentRuntime {
     /// Builds local overrides (self-signed cert if enabled) and reloads `sing-box`.
     async fn apply_and_reload_singbox(&mut self) -> Result<()> {
-        let cert_path = self.cfg.cert_dir.join("fullchain.pem");
-        let key_path = self.cfg.cert_dir.join("privkey.pem");
-        if self.tls_profile.mode == "self_signed" {
+        let (cert_path_override, key_path_override) = if self.tls_profile.mode == "self_signed" {
+            let cert_path = self.cfg.cert_dir.join("fullchain.pem");
+            let key_path = self.cfg.cert_dir.join("privkey.pem");
             let _ = ensure_self_signed_cert(&cert_path, &key_path, &self.tls_profile.server_name)?;
-        }
+            (
+                Some(cert_path.display().to_string()),
+                Some(key_path.display().to_string()),
+            )
+        } else {
+            self.last_cert_mtime = std::fs::metadata(&self.tls_profile.cert_path)
+                .ok()
+                .and_then(|m| m.modified().ok());
+            (None, None)
+        };
 
         let overrides = LocalAgentOverrides {
-            cert_path_override: Some(cert_path.display().to_string()),
-            key_path_override: Some(key_path.display().to_string()),
+            cert_path_override,
+            key_path_override,
             v2ray_api_listen: self.cfg.v2ray_api_addr.clone(),
             clash_api_listen: self
                 .cfg
@@ -455,6 +469,28 @@ impl AgentRuntime {
         }
     }
 
+    /// Checks whether an `external_files` TLS certificate changed on disk and reloads `sing-box`.
+    async fn check_external_cert_reload(&mut self) {
+        if self.tls_profile.mode != "external_files" {
+            return;
+        }
+        let Ok(meta) = std::fs::metadata(&self.tls_profile.cert_path) else {
+            return;
+        };
+        let Ok(mtime) = meta.modified() else {
+            return;
+        };
+        if self.last_cert_mtime.is_some_and(|prev| mtime > prev) {
+            tracing::info!(
+                cert_path = %self.tls_profile.cert_path,
+                "external TLS certificate updated; reloading sing-box"
+            );
+            if let Err(err) = self.apply_and_reload_singbox().await {
+                tracing::warn!(error = %err, "failed to reload sing-box after cert update");
+            }
+        }
+    }
+
     /// Processes an incoming SSE event immediately.
     async fn handle_sse_event(&mut self, ev: NodeSseEvent) {
         match ev {
@@ -569,6 +605,23 @@ impl AgentRuntime {
             }
         }
     }
+}
+
+/// Waits for SIGINT (Ctrl-C) or SIGTERM (systemd / procd stop) for graceful telemetry flush.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut term) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]

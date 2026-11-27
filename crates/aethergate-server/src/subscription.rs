@@ -352,19 +352,29 @@ fn render_singbox_outbound(
                 }
             }
         })),
-        InboundProtocolConfig::Hysteria2 { obfs, .. } => Some(json!({
-            "type": "hysteria2",
-            "tag": tag,
-            "server": row.host,
-            "server_port": row.listen_port,
-            "password": proxy_password,
-            "obfs": obfs,
-            "tls": {
-                "enabled": true,
-                "server_name": tls.server_name,
-                "insecure": tls.mode == "self_signed"
+        InboundProtocolConfig::Hysteria2 { obfs, .. } => {
+            let mut obj = serde_json::Map::new();
+            obj.insert("type".to_owned(), json!("hysteria2"));
+            obj.insert("tag".to_owned(), json!(tag));
+            obj.insert("server".to_owned(), json!(row.host));
+            obj.insert("server_port".to_owned(), json!(row.listen_port));
+            if let Some(ports) = row.port_range.as_deref().filter(|s| !s.is_empty()) {
+                obj.insert("server_ports".to_owned(), json!([ports.replace('-', ":")]));
             }
-        })),
+            obj.insert("password".to_owned(), json!(proxy_password));
+            if let Some(obfs_cfg) = obfs {
+                obj.insert("obfs".to_owned(), json!(obfs_cfg));
+            }
+            obj.insert(
+                "tls".to_owned(),
+                json!({
+                    "enabled": true,
+                    "server_name": tls.server_name,
+                    "insecure": tls.mode == "self_signed"
+                }),
+            );
+            Some(Value::Object(obj))
+        }
         InboundProtocolConfig::Tuic {
             congestion_control,
             udp_relay_mode,
@@ -691,6 +701,8 @@ mod tests {
                     short_ids: vec!["01ab".to_owned()],
                     flow: "xtls-rprx-vision".to_owned(),
                     fingerprint: "chrome".to_owned(),
+                    alpn: vec![],
+                    max_time_difference: None,
                 },
             ),
             uid,
@@ -789,6 +801,8 @@ mod tests {
                     short_ids: vec!["ecd269cf".to_owned()],
                     flow: "xtls-rprx-vision".to_owned(),
                     fingerprint: "chrome".to_owned(),
+                    alpn: vec![],
+                    max_time_difference: None,
                 })
                 .unwrap_or(Value::Null),
             },

@@ -22,8 +22,8 @@ pub use open_api::{
     NodeConfigResponse, NodeUsersSyncResponse, UserDeltaEntry, UserDeltaOpKind, UserSyncMode,
 };
 pub use protocol::{
-    AuthorizedUserCredential, Hy2ObfsConfig, InboundProtocolConfig, NodeInboundSpec, NodeTemplate,
-    ProtocolType, TlsProfile, TransportLayer,
+    AuthorizedUserCredential, DnsRouteProfile, Hy2ObfsConfig, InboundProtocolConfig,
+    NodeInboundSpec, NodeTemplate, OutboundSpec, ProtocolType, TlsProfile, TransportLayer,
 };
 pub use sse::NodeSseEvent;
 pub use telemetry::{

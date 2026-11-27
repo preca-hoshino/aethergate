@@ -70,7 +70,10 @@ pub fn build_router(state: AppState) -> Router {
             "/node-groups/{id}/members",
             put(panel::replace_node_group_members),
         )
-        .route("/users", get(panel::list_users))
+        .route(
+            "/users",
+            get(panel::list_users).post(panel::admin_create_user),
+        )
         .route(
             "/users/{id}",
             get(panel::get_user_detail).patch(panel::update_user),

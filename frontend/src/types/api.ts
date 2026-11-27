@@ -24,6 +24,7 @@ export interface AuthProvidersResponse {
 
 export interface NodeSummary {
   id: string
+  parent_node_id: string | null
   name: string
   host: string
   region: string
@@ -58,12 +59,14 @@ export interface NodeInboundSpec {
   listen: string
   listen_port: number
   port_hopping_range: string | null
+  outbound_tag?: string | null
   protocol_config: Record<string, unknown>
   sort_order: number
 }
 
 export interface NodeDetail {
   id: string
+  parent_node_id: string | null
   name: string
   host: string
   region: string
@@ -72,6 +75,8 @@ export interface NodeDetail {
   config_revision: number
   user_revision: number
   tls_profile: TlsProfile
+  outbounds: Array<Record<string, unknown>>
+  dns_route: Record<string, unknown>
   inbounds: NodeInboundSpec[]
 }
 

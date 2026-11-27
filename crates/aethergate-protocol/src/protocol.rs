@@ -81,6 +81,12 @@ pub enum InboundProtocolConfig {
         flow: String,
         /// Client uTLS fingerprint (default `chrome`).
         fingerprint: String,
+        /// Optional ALPN list for REALITY TLS handshake (e.g. `["h2", "http/1.1"]`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        alpn: Vec<String>,
+        /// Optional REALITY `max_time_difference` (e.g. `"30s"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_time_difference: Option<String>,
     },
     /// Hysteria 2 parameters.
     Hysteria2 {
@@ -92,8 +98,8 @@ pub enum InboundProtocolConfig {
         ignore_client_bandwidth: bool,
         /// Optional QUIC packet obfuscation.
         obfs: Option<Hy2ObfsConfig>,
-        /// Optional HTTP/3 masquerade target URL.
-        masquerade: Option<String>,
+        /// Optional HTTP/3 masquerade target URL or structured `sing-box` masquerade object.
+        masquerade: Option<serde_json::Value>,
         /// ALPN list (default `["h3"]`).
         alpn: Vec<String>,
     },
@@ -153,6 +159,96 @@ pub struct NodeInboundSpec {
     pub protocol_config: InboundProtocolConfig,
     /// Deterministic ordering key.
     pub sort_order: i16,
+    /// Optional outbound tag routed from this inbound (defaults to `"direct"` when omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_tag: Option<String>,
+    /// Optional per-inbound authorized username filter (used when a physical host hosts multiple logical nodes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_usernames: Option<Vec<String>>,
+}
+
+/// Custom outbound definition attached to a node (e.g., policy-routed CERNET direct or upstream relay).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OutboundSpec {
+    /// Direct outbound with optional interface binding and Linux `fwmark`.
+    Direct {
+        /// Outbound tag (e.g. `"direct-campus"`).
+        tag: String,
+        /// Optional network interface name (`"wan"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bind_interface: Option<String>,
+        /// Optional Linux routing mark (`262144` == `0x40000`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing_mark: Option<u32>,
+    },
+    /// Upstream Hysteria 2 relay outbound (e.g. `cn-sha-02` -> `jp-hnd-01:40001`).
+    Hysteria2 {
+        /// Outbound tag (e.g. `"jp-hy2"`).
+        tag: String,
+        /// Upstream server host/IP.
+        server: String,
+        /// Upstream server port.
+        server_port: u16,
+        /// Relay authentication password (decrypted during compilation).
+        password: String,
+        /// Optional TLS SNI override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_name: Option<String>,
+        /// Whether to skip TLS verification (`true` for self-signed upstream).
+        #[serde(default)]
+        insecure: bool,
+        /// Optional ALPN list (default `["h3"]`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        alpn: Vec<String>,
+        /// Optional network interface name (`"wan"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bind_interface: Option<String>,
+        /// Optional Linux routing mark (`262144` == `0x40000`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing_mark: Option<u32>,
+    },
+}
+
+/// Optional node-level DNS and routing policy overrides stored in `NodeTemplate.dns_route`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DnsRouteProfile {
+    /// Optional primary DNS URL (`https://223.5.5.5:443/dns-query`, `tls://8.8.8.8`, or `1.1.1.1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_server: Option<String>,
+    /// Optional TLS SNI for DoH/DoT DNS server (e.g. `"dns.alidns.com"`, `"dns.google"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_server_name: Option<String>,
+    /// Optional `sing-box` DNS strategy (`"ipv4_only"`, `"prefer_ipv6"`, `"prefer_ipv4"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_strategy: Option<String>,
+    /// Whether to hijack `protocol: "dns"` traffic in route rules.
+    #[serde(default = "default_true")]
+    pub hijack_dns: bool,
+    /// `route.auto_detect_interface` flag (must be `false` on multi-WAN routers like `cn-sha-02`).
+    #[serde(default = "default_true")]
+    pub auto_detect_interface: bool,
+    /// Whether to reject private/campus/Tailnet IP destinations (`false` on CERNET/Tailnet nodes).
+    #[serde(default = "default_true")]
+    pub reject_private_ip: bool,
+}
+
+impl Default for DnsRouteProfile {
+    fn default() -> Self {
+        Self {
+            dns_server: None,
+            dns_server_name: None,
+            dns_strategy: None,
+            hijack_dns: true,
+            auto_detect_interface: true,
+            reject_private_ip: true,
+        }
+    }
+}
+
+/// Default `true` helper for serde.
+const fn default_true() -> bool {
+    true
 }
 
 /// Node-level shared TLS certificate profile reused across Hysteria 2, TUIC, and `AnyTLS`.
@@ -184,8 +280,11 @@ impl Default for TlsProfile {
 pub struct NodeTemplate {
     /// Configured protocol inbounds for the node.
     pub inbounds: Vec<NodeInboundSpec>,
-    /// Optional custom DNS/route overrides.
+    /// Optional custom DNS/route overrides (`DnsRouteProfile` JSON).
     pub dns_route: serde_json::Value,
+    /// Optional additional outbounds (policy-routed direct or upstream relay).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbounds: Vec<OutboundSpec>,
 }
 
 /// Deduplicated proxy user credential synced to a node.

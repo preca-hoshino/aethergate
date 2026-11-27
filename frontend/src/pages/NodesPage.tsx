@@ -39,6 +39,7 @@ export function NodesPage() {
   const [name, setName] = useState('')
   const [host, setHost] = useState('')
   const [region, setRegion] = useState('JP')
+  const [parentNodeId, setParentNodeId] = useState('')
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null)
 
   const { data: nodes = [], isLoading } = useQuery({
@@ -52,11 +53,13 @@ export function NodesPage() {
         name,
         host,
         region,
+        parent_node_id: parentNodeId || null,
       }),
     onSuccess: (res) => {
       setBootstrap(res)
       setName('')
       setHost('')
+      setParentNodeId('')
       void queryClient.invalidateQueries({ queryKey: ['nodes'] })
       toast.success(`Node "${res.name}" created`)
     },
@@ -137,6 +140,14 @@ export function NodesPage() {
                   <Label>Region</Label>
                   <Input placeholder="JP" value={region} onChange={(e) => { setRegion(e.target.value); }} />
                 </div>
+                <div className="space-y-1.5">
+                  <Label>Parent Physical Host UUID (optional, for logical egress nodes)</Label>
+                  <Input
+                    placeholder="Leave empty for physical host"
+                    value={parentNodeId}
+                    onChange={(e) => { setParentNodeId(e.target.value); }}
+                  />
+                </div>
               </div>
             )}
 
@@ -193,9 +204,12 @@ export function NodesPage() {
                 return (
                   <TableRow key={node.id}>
                     <TableCell className="font-medium">
-                      <Link to="/nodes/$nodeId" params={{ nodeId: node.id }} className="hover:underline">
-                        {node.name}
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <Link to="/nodes/$nodeId" params={{ nodeId: node.id }} className="hover:underline">
+                          {node.name}
+                        </Link>
+                        {node.parent_node_id && <Badge variant="outline">Logical</Badge>}
+                      </div>
                       <div className="text-muted-foreground text-xs">{node.region}</div>
                     </TableCell>
                     <TableCell className="font-mono text-xs">{node.host}</TableCell>

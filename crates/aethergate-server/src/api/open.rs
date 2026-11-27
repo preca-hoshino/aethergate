@@ -1,5 +1,6 @@
 //! Hysteria 2-inspired Node Open API (`/api/open/v1/*`) secured by per-node HMAC-SHA256.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -21,9 +22,9 @@ use aethergate_protocol::{
     AuthorizedUserCredential, ClientAuthRequest, ClientAuthResponse, CommandAckRequest,
     ConfigFormat, DEFAULT_MAX_TIMESTAMP_SKEW_SECS, HEADER_NODE_ID, HEADER_NONCE, HEADER_SIGNATURE,
     HEADER_TIMESTAMP, InboundProtocolConfig, NodeAuthVerifyResponse, NodeConfigResponse,
-    NodeInboundSpec, NodeStatusReport, NodeTemplate, NodeUsersSyncResponse, ReportAckAction,
-    ReportAckResponse, ReportCadenceMode, TelemetryBatchRequest, TlsProfile, UserDeltaEntry,
-    UserDeltaOpKind, UserSyncMode, VerifyRequestParams, compile_singbox_config,
+    NodeInboundSpec, NodeStatusReport, NodeTemplate, NodeUsersSyncResponse, OutboundSpec,
+    ReportAckAction, ReportAckResponse, ReportCadenceMode, TelemetryBatchRequest, TlsProfile,
+    UserDeltaEntry, UserDeltaOpKind, UserSyncMode, VerifyRequestParams, compile_singbox_config,
     compute_deterministic_etag, verify_request,
 };
 
@@ -43,6 +44,10 @@ struct VerifiedNodeRow {
     hmac_secret_enc: Vec<u8>,
     /// Shared TLS profile JSON.
     tls_profile: Value,
+    /// Node-level custom outbounds JSON.
+    outbounds: Value,
+    /// Node-level DNS/route overrides JSON.
+    dns_route: Value,
     /// Current config revision.
     config_revision: i64,
     /// Current user revision.
@@ -86,7 +91,7 @@ async fn authenticate_node(
 
     let node = sqlx::query_as::<_, VerifiedNodeRow>(
         r"
-        SELECT id, name, hmac_secret_enc, tls_profile, config_revision, user_revision
+        SELECT id, name, hmac_secret_enc, tls_profile, outbounds, dns_route, config_revision, user_revision
         FROM nodes
         WHERE id = $1
         ",
@@ -211,6 +216,8 @@ pub struct OpenConfigQuery {
 struct DbInboundRow {
     /// Inbound UUID.
     id: Uuid,
+    /// Owning node (or logical child node) UUID.
+    node_id: Uuid,
     /// Inbound tag.
     tag: String,
     /// Listen IP.
@@ -219,6 +226,8 @@ struct DbInboundRow {
     listen_port: i32,
     /// Optional port hopping range.
     port_range: Option<String>,
+    /// Optional outbound tag.
+    outbound_tag: Option<String>,
     /// Protocol config JSON.
     protocol_config: Value,
     /// Enabled flag.
@@ -234,44 +243,9 @@ pub async fn open_get_config(
     Query(query): Query<OpenConfigQuery>,
 ) -> AppResult<Response> {
     let node = authenticate_node(&state, &method, &uri, &headers, &[]).await?;
-    let tls_profile: TlsProfile = serde_json::from_value(node.tls_profile)
+    let tls_profile: TlsProfile = serde_json::from_value(node.tls_profile.clone())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid node tls_profile JSON: {e}")))?;
-
-    let db_inbounds = sqlx::query_as::<_, DbInboundRow>(
-        r"
-        SELECT id, tag, listen, listen_port, port_range, protocol_config, enabled
-        FROM node_inbounds
-        WHERE node_id = $1 AND enabled = TRUE
-        ORDER BY sort_order ASC, listen_port ASC
-        ",
-    )
-    .bind(node.id)
-    .fetch_all(&state.db)
-    .await?;
-
-    let mut inbounds = Vec::with_capacity(db_inbounds.len());
-    for (idx, row) in db_inbounds.into_iter().enumerate() {
-        let protocol_config: InboundProtocolConfig = serde_json::from_value(row.protocol_config)
-            .map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("invalid inbound protocol_config JSON: {e}"))
-            })?;
-        inbounds.push(NodeInboundSpec {
-            id: row.id,
-            protocol: protocol_config.protocol_type(),
-            tag: row.tag,
-            enabled: row.enabled,
-            listen: row.listen,
-            listen_port: u16::try_from(row.listen_port).unwrap_or(443),
-            port_hopping_range: row.port_range,
-            protocol_config,
-            sort_order: i16::try_from(idx).unwrap_or(0),
-        });
-    }
-
-    let template = NodeTemplate {
-        inbounds,
-        dns_route: Value::Null,
-    };
+    let template = build_node_template(&state, &node).await?;
 
     let payload = match query.format {
         ConfigFormat::Compact => NodeConfigResponse {
@@ -319,6 +293,71 @@ pub async fn open_get_config(
     Ok(resp)
 }
 
+/// Builds a [`NodeTemplate`] aggregating the physical node and any child logical nodes.
+async fn build_node_template(state: &AppState, node: &VerifiedNodeRow) -> AppResult<NodeTemplate> {
+    let outbounds: Vec<OutboundSpec> =
+        serde_json::from_value(node.outbounds.clone()).unwrap_or_default();
+
+    let db_inbounds = sqlx::query_as::<_, DbInboundRow>(
+        r"
+        SELECT id, node_id, tag, listen, listen_port, port_range, outbound_tag, protocol_config, enabled
+        FROM node_inbounds
+        WHERE enabled = TRUE
+          AND (node_id = $1 OR node_id IN (SELECT id FROM nodes WHERE parent_node_id = $1))
+        ORDER BY sort_order ASC, listen_port ASC
+        ",
+    )
+    .bind(node.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let has_logical_children = db_inbounds.iter().any(|r| r.node_id != node.id);
+    let mut per_node_allowed: HashMap<Uuid, Vec<String>> = HashMap::new();
+    if has_logical_children {
+        for row in &db_inbounds {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                per_node_allowed.entry(row.node_id)
+            {
+                let creds = load_authorized_credentials_for_exact_node(state, row.node_id).await?;
+                let names = creds.into_iter().map(|c| c.proxy_username).collect();
+                e.insert(names);
+            }
+        }
+    }
+
+    let mut inbounds = Vec::with_capacity(db_inbounds.len());
+    for (idx, row) in db_inbounds.into_iter().enumerate() {
+        let protocol_config: InboundProtocolConfig = serde_json::from_value(row.protocol_config)
+            .map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("invalid inbound protocol_config JSON: {e}"))
+            })?;
+        let allowed_usernames = if has_logical_children {
+            per_node_allowed.get(&row.node_id).cloned()
+        } else {
+            None
+        };
+        inbounds.push(NodeInboundSpec {
+            id: row.id,
+            protocol: protocol_config.protocol_type(),
+            tag: row.tag,
+            enabled: row.enabled,
+            listen: row.listen,
+            listen_port: u16::try_from(row.listen_port).unwrap_or(443),
+            port_hopping_range: row.port_range,
+            protocol_config,
+            sort_order: i16::try_from(idx).unwrap_or(0),
+            outbound_tag: row.outbound_tag,
+            allowed_usernames,
+        });
+    }
+
+    Ok(NodeTemplate {
+        inbounds,
+        dns_route: node.dns_route.clone(),
+        outbounds,
+    })
+}
+
 /// Query params for `GET /api/open/v1/users`.
 #[derive(Debug, Deserialize)]
 pub struct OpenUsersQuery {
@@ -352,8 +391,8 @@ struct DbUserDeltaRow {
     proxy_username: String,
 }
 
-/// Loads all currently authorized user credentials for `node_id`.
-async fn load_authorized_credentials_for_node(
+/// Loads authorized credentials for an exact node UUID (used for per-logical-node inbound filtering).
+async fn load_authorized_credentials_for_exact_node(
     state: &AppState,
     node_id: Uuid,
 ) -> AppResult<Vec<AuthorizedUserCredential>> {
@@ -370,6 +409,49 @@ async fn load_authorized_credentials_for_node(
                   FROM user_node_group_grants ungg
                   JOIN node_group_members ngm ON ngm.group_id = ungg.group_id
                   WHERE ungg.user_id = u.id AND ngm.node_id = $1
+              )
+          )
+        ORDER BY u.proxy_username ASC
+        ",
+    )
+    .bind(node_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| AuthorizedUserCredential {
+            user_id: r.id,
+            proxy_username: r.proxy_username,
+            proxy_uuid: r.proxy_uuid,
+            proxy_password: r.proxy_password,
+        })
+        .collect())
+}
+
+/// Loads all currently authorized user credentials for `node_id` (and any logical child nodes).
+async fn load_authorized_credentials_for_node(
+    state: &AppState,
+    node_id: Uuid,
+) -> AppResult<Vec<AuthorizedUserCredential>> {
+    let rows = sqlx::query_as::<_, DbAuthorizedUserRow>(
+        r"
+        SELECT DISTINCT u.id, u.proxy_username, u.proxy_uuid, u.proxy_password
+        FROM users u
+        WHERE u.panel_status = 'active'
+          AND u.proxy_enabled = TRUE
+          AND (
+              EXISTS (
+                  SELECT 1 FROM user_node_grants ung
+                  WHERE ung.user_id = u.id
+                    AND (ung.node_id = $1 OR ung.node_id IN (SELECT id FROM nodes WHERE parent_node_id = $1))
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM user_node_group_grants ungg
+                  JOIN node_group_members ngm ON ngm.group_id = ungg.group_id
+                  WHERE ungg.user_id = u.id
+                    AND (ngm.node_id = $1 OR ngm.node_id IN (SELECT id FROM nodes WHERE parent_node_id = $1))
               )
           )
         ORDER BY u.proxy_username ASC

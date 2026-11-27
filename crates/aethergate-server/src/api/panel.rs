@@ -67,11 +67,24 @@ async fn emit_user_deltas(
     user_id: Uuid,
     proxy_username: &str,
 ) -> AppResult<()> {
+    let mut visited = HashSet::new();
     for &node_id in node_ids {
+        let (target_id, is_logical): (Uuid, bool) = sqlx::query_as(
+            "SELECT COALESCE(parent_node_id, id), (parent_node_id IS NOT NULL) FROM nodes WHERE id = $1",
+        )
+        .bind(node_id)
+        .fetch_optional(&state.db)
+        .await?
+        .unwrap_or((node_id, false));
+
+        if !visited.insert(target_id) {
+            continue;
+        }
+
         let rev: i64 = sqlx::query_scalar(
             "UPDATE nodes SET user_revision = user_revision + 1, updated_at = NOW() WHERE id = $1 RETURNING user_revision",
         )
-        .bind(node_id)
+        .bind(target_id)
         .fetch_one(&state.db)
         .await?;
 
@@ -81,7 +94,7 @@ async fn emit_user_deltas(
             VALUES ($1, $2, $3, $4, $5)
             ",
         )
-        .bind(node_id)
+        .bind(target_id)
         .bind(rev)
         .bind(op)
         .bind(user_id)
@@ -90,9 +103,23 @@ async fn emit_user_deltas(
         .await?;
 
         state.push_node_event(
-            node_id,
+            target_id,
             NodeSseEvent::UserDeltaAvailable { user_revision: rev },
         );
+        if is_logical {
+            let cfg_rev: i64 = sqlx::query_scalar(
+                "UPDATE nodes SET config_revision = config_revision + 1 WHERE id = $1 RETURNING config_revision",
+            )
+            .bind(target_id)
+            .fetch_one(&state.db)
+            .await?;
+            state.push_node_event(
+                target_id,
+                NodeSseEvent::ConfigChanged {
+                    config_revision: cfg_rev,
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -126,6 +153,8 @@ async fn list_user_granted_node_ids(state: &AppState, user_id: Uuid) -> AppResul
 pub struct NodeSummaryDto {
     /// Node UUID.
     pub id: Uuid,
+    /// Optional parent physical node UUID when this is a logical egress node.
+    pub parent_node_id: Option<Uuid>,
     /// Node name.
     pub name: String,
     /// Public host/IP.
@@ -172,7 +201,7 @@ pub async fn list_nodes(
     let rows = sqlx::query_as::<_, NodeSummaryDto>(
         r"
         SELECT
-            n.id, n.name, n.host, n.region, n.status, n.tags,
+            n.id, n.parent_node_id, n.name, n.host, n.region, n.status, n.tags,
             n.config_revision, n.user_revision, n.cadence_mode,
             n.cpu_pct, n.mem_pct, n.active_connections, n.active_users,
             n.uptime_secs, n.last_seen_at,
@@ -213,6 +242,12 @@ pub struct CreateNodeRequest {
     pub tags: Vec<String>,
     /// Shared TLS profile (auto-initialized if omitted).
     pub tls_profile: Option<TlsProfile>,
+    /// Optional parent physical node UUID for logical egress nodes.
+    pub parent_node_id: Option<Uuid>,
+    /// Optional custom outbounds JSON array.
+    pub outbounds: Option<Value>,
+    /// Optional custom DNS/route JSON object.
+    pub dns_route: Option<Value>,
 }
 
 /// Default region label.
@@ -259,19 +294,28 @@ pub async fn create_node(
     let tags_json = serde_json::to_value(&req.tags)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("tags serialization failed: {e}")))?;
 
+    let outbounds_json = req.outbounds.unwrap_or_else(|| json!([]));
+    let dns_route_json = req.dns_route.unwrap_or_else(|| json!({}));
+
     sqlx::query(
         r"
-        INSERT INTO nodes (id, name, host, region, tags, hmac_secret_enc, tls_profile)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO nodes (
+            id, parent_node_id, name, host, region, tags,
+            hmac_secret_enc, tls_profile, outbounds, dns_route
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ",
     )
     .bind(node_id)
+    .bind(req.parent_node_id)
     .bind(req.name.trim())
     .bind(req.host.trim())
     .bind(req.region.trim())
     .bind(tags_json)
     .bind(encrypted)
     .bind(tls_json)
+    .bind(outbounds_json)
+    .bind(dns_route_json)
     .execute(&state.db)
     .await?;
 
@@ -300,6 +344,8 @@ pub async fn create_node(
 pub struct NodeDetailDto {
     /// Node UUID.
     pub id: Uuid,
+    /// Optional parent physical node UUID.
+    pub parent_node_id: Option<Uuid>,
     /// Display name.
     pub name: String,
     /// Public host.
@@ -316,6 +362,10 @@ pub struct NodeDetailDto {
     pub user_revision: i64,
     /// Shared TLS profile.
     pub tls_profile: TlsProfile,
+    /// Custom outbounds JSON array.
+    pub outbounds: Value,
+    /// Custom DNS/route JSON object.
+    pub dns_route: Value,
     /// Configured 4-protocol inbounds.
     pub inbounds: Vec<NodeInboundSpec>,
 }
@@ -325,6 +375,8 @@ pub struct NodeDetailDto {
 struct NodeRecordRow {
     /// Node UUID.
     id: Uuid,
+    /// Optional parent physical node UUID.
+    parent_node_id: Option<Uuid>,
     /// Display name.
     name: String,
     /// Public host.
@@ -341,6 +393,10 @@ struct NodeRecordRow {
     user_revision: i64,
     /// Shared TLS JSON.
     tls_profile: Value,
+    /// Custom outbounds JSON.
+    outbounds: Value,
+    /// Custom DNS/route JSON.
+    dns_route: Value,
 }
 
 /// Stored inbound row.
@@ -356,6 +412,8 @@ struct InboundRecordRow {
     listen_port: i32,
     /// Optional port range.
     port_range: Option<String>,
+    /// Optional outbound tag.
+    outbound_tag: Option<String>,
     /// Protocol config JSON.
     protocol_config: Value,
     /// Enabled flag.
@@ -370,7 +428,7 @@ pub async fn get_node_detail(
 ) -> AppResult<Json<NodeDetailDto>> {
     let node = sqlx::query_as::<_, NodeRecordRow>(
         r"
-        SELECT id, name, host, region, status, tags, config_revision, user_revision, tls_profile
+        SELECT id, parent_node_id, name, host, region, status, tags, config_revision, user_revision, tls_profile, outbounds, dns_route
         FROM nodes WHERE id = $1
         ",
     )
@@ -381,7 +439,7 @@ pub async fn get_node_detail(
 
     let db_inbounds = sqlx::query_as::<_, InboundRecordRow>(
         r"
-        SELECT id, tag, listen, listen_port, port_range, protocol_config, enabled
+        SELECT id, tag, listen, listen_port, port_range, outbound_tag, protocol_config, enabled
         FROM node_inbounds
         WHERE node_id = $1
         ORDER BY sort_order ASC, listen_port ASC
@@ -406,6 +464,8 @@ pub async fn get_node_detail(
             port_hopping_range: r.port_range,
             protocol_config,
             sort_order: i16::try_from(idx).unwrap_or(0),
+            outbound_tag: r.outbound_tag,
+            allowed_usernames: None,
         });
     }
 
@@ -415,6 +475,7 @@ pub async fn get_node_detail(
 
     Ok(Json(NodeDetailDto {
         id: node.id,
+        parent_node_id: node.parent_node_id,
         name: node.name,
         host: node.host,
         region: node.region,
@@ -423,6 +484,8 @@ pub async fn get_node_detail(
         config_revision: node.config_revision,
         user_revision: node.user_revision,
         tls_profile,
+        outbounds: node.outbounds,
+        dns_route: node.dns_route,
         inbounds,
     }))
 }
@@ -438,6 +501,10 @@ pub struct UpdateNodeRequest {
     pub region: Option<String>,
     /// Updated tags.
     pub tags: Option<Vec<String>>,
+    /// Updated custom outbounds JSON array.
+    pub outbounds: Option<Value>,
+    /// Updated custom DNS/route JSON object.
+    pub dns_route: Option<Value>,
 }
 
 /// `PATCH /api/v1/nodes/{id}`
@@ -452,6 +519,7 @@ pub async fn update_node(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|e| AppError::BadRequest(format!("invalid tags: {e}")))?;
+    let bump_cfg = req.outbounds.is_some() || req.dns_route.is_some();
 
     let res = sqlx::query(
         r"
@@ -460,6 +528,9 @@ pub async fn update_node(
             host = COALESCE($3, host),
             region = COALESCE($4, region),
             tags = COALESCE($5, tags),
+            outbounds = COALESCE($6, outbounds),
+            dns_route = COALESCE($7, dns_route),
+            config_revision = CASE WHEN $8 THEN config_revision + 1 ELSE config_revision END,
             updated_at = NOW()
         WHERE id = $1
         ",
@@ -469,11 +540,27 @@ pub async fn update_node(
     .bind(req.host)
     .bind(req.region)
     .bind(tags_json)
+    .bind(req.outbounds)
+    .bind(req.dns_route)
+    .bind(bump_cfg)
     .execute(&state.db)
     .await?;
 
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound("node not found".to_owned()));
+    }
+
+    if bump_cfg {
+        let cfg_rev: i64 = sqlx::query_scalar("SELECT config_revision FROM nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_one(&state.db)
+            .await?;
+        state.push_node_event(
+            node_id,
+            NodeSseEvent::ConfigChanged {
+                config_revision: cfg_rev,
+            },
+        );
     }
 
     record_audit_log(
@@ -482,7 +569,7 @@ pub async fn update_node(
         "node.update",
         "node",
         Some(&node_id.to_string()),
-        json!({}),
+        json!({ "bump_cfg": bump_cfg }),
     )
     .await?;
 
@@ -558,9 +645,9 @@ pub async fn replace_node_inbounds(
             r"
             INSERT INTO node_inbounds (
                 id, node_id, tag, protocol, transport, listen, listen_port,
-                port_range, protocol_config, enabled, sort_order
+                port_range, outbound_tag, protocol_config, enabled, sort_order
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ",
         )
         .bind(Uuid::new_v4())
@@ -571,6 +658,7 @@ pub async fn replace_node_inbounds(
         .bind(&inbound.listen)
         .bind(i32::from(inbound.listen_port))
         .bind(&inbound.port_hopping_range)
+        .bind(&inbound.outbound_tag)
         .bind(cfg_json)
         .bind(inbound.enabled)
         .bind(i32::try_from(idx).unwrap_or(0))
@@ -578,16 +666,25 @@ pub async fn replace_node_inbounds(
         .await?;
     }
 
+    let physical_node_id: Uuid =
+        sqlx::query_scalar("SELECT COALESCE(parent_node_id, id) FROM nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
     let config_revision: i64 = sqlx::query_scalar(
         "UPDATE nodes SET config_revision = config_revision + 1, updated_at = NOW() WHERE id = $1 RETURNING config_revision",
     )
-    .bind(node_id)
+    .bind(physical_node_id)
     .fetch_one(&mut *tx)
     .await?;
 
     tx.commit().await?;
 
-    state.push_node_event(node_id, NodeSseEvent::ConfigChanged { config_revision });
+    state.push_node_event(
+        physical_node_id,
+        NodeSseEvent::ConfigChanged { config_revision },
+    );
     record_audit_log(
         &state,
         admin.id,
@@ -922,6 +1019,8 @@ pub struct UserSummaryDto {
     pub email: Option<String>,
     /// Role (`admin` or `user`).
     pub role: String,
+    /// Account type (`user` or `relay`).
+    pub account_type: String,
     /// Panel status (`active` or `disabled`).
     pub panel_status: String,
     /// Whether proxy access is approved.
@@ -938,6 +1037,120 @@ pub struct UserSummaryDto {
     pub created_at: DateTime<Utc>,
 }
 
+/// Request payload for `POST /api/v1/users` (creates a relay service account or legacy credential bridge user).
+#[derive(Debug, Deserialize)]
+pub struct AdminCreateUserRequest {
+    /// Display name (e.g., `"relay_cn_sha_02"` or `"legacy_jp_tuic"`).
+    pub display_name: String,
+    /// Account type: `"user"` (default) or `"relay"` (excluded from `user_monthly_traffic` double-counting).
+    #[serde(default = "default_account_type")]
+    pub account_type: String,
+    /// Optional explicit proxy username (auto-generated if omitted).
+    pub proxy_username: Option<String>,
+    /// Optional explicit proxy UUID (used for zero-downtime legacy credential bridging).
+    pub proxy_uuid: Option<Uuid>,
+    /// Optional explicit proxy password (used for zero-downtime legacy credential bridging).
+    pub proxy_password: Option<String>,
+    /// Initial granted node IDs.
+    #[serde(default)]
+    pub node_ids: Vec<Uuid>,
+}
+
+/// Default account type.
+fn default_account_type() -> String {
+    "user".to_owned()
+}
+
+/// `POST /api/v1/users` - admin creates a relay service account or legacy migration user.
+pub async fn admin_create_user(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(req): Json<AdminCreateUserRequest>,
+) -> AppResult<(StatusCode, Json<Value>)> {
+    if req.display_name.trim().is_empty() {
+        return Err(AppError::BadRequest("display_name is required".to_owned()));
+    }
+    let account_type = if req.account_type == "relay" {
+        "relay"
+    } else {
+        "user"
+    };
+    let user_id = Uuid::new_v4();
+    let short_id = user_id.simple().to_string();
+    let proxy_username = req
+        .proxy_username
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if account_type == "relay" {
+                format!("relay_{}", &short_id[..10])
+            } else {
+                format!("ag_{}", &short_id[..12])
+            }
+        });
+    let proxy_uuid = req.proxy_uuid.unwrap_or_else(Uuid::new_v4);
+    let proxy_password = req
+        .proxy_password
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| generate_random_token(24));
+    let sub_token = generate_random_token(24);
+    let oidc_subject = format!("internal:{user_id}");
+
+    sqlx::query(
+        r"
+        INSERT INTO users (
+            id, oidc_subject, display_name, role, account_type, panel_status,
+            proxy_enabled, proxy_username, proxy_uuid, proxy_password, sub_token
+        )
+        VALUES ($1, $2, $3, 'user', $4, 'active', TRUE, $5, $6, $7, $8)
+        ",
+    )
+    .bind(user_id)
+    .bind(&oidc_subject)
+    .bind(req.display_name.trim())
+    .bind(account_type)
+    .bind(&proxy_username)
+    .bind(proxy_uuid)
+    .bind(&proxy_password)
+    .bind(&sub_token)
+    .execute(&state.db)
+    .await?;
+
+    for nid in &req.node_ids {
+        sqlx::query(
+            "INSERT INTO user_node_grants (user_id, node_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(nid)
+        .execute(&state.db)
+        .await?;
+    }
+
+    if !req.node_ids.is_empty() {
+        emit_user_deltas(&state, &req.node_ids, "upsert", user_id, &proxy_username).await?;
+    }
+
+    record_audit_log(
+        &state,
+        admin.id,
+        "user.admin_create",
+        "user",
+        Some(&user_id.to_string()),
+        json!({ "account_type": account_type, "proxy_username": proxy_username }),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "id": user_id,
+            "proxy_username": proxy_username,
+            "proxy_uuid": proxy_uuid,
+            "proxy_password": proxy_password,
+            "account_type": account_type
+        })),
+    ))
+}
+
 /// `GET /api/v1/users`
 pub async fn list_users(
     State(state): State<AppState>,
@@ -948,7 +1161,7 @@ pub async fn list_users(
     let rows = sqlx::query_as::<_, UserSummaryDto>(
         r"
         SELECT
-            u.id, u.display_name, u.email, u.role, u.panel_status,
+            u.id, u.display_name, u.email, u.role, u.account_type, u.panel_status,
             u.proxy_enabled, u.proxy_username, u.created_at,
             COALESCE((
                 SELECT COUNT(DISTINCT node_id)::bigint FROM (

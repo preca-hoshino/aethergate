@@ -308,7 +308,7 @@ export function NodeDetailPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-4">
                 <div className="space-y-1">
                   <Label className="text-xs">Tag</Label>
                   <Input
@@ -336,6 +336,19 @@ export function NodeDetailPage() {
                     onChange={(e) => { setInbounds((prev) =>
                         prev.map((x, i) =>
                           i === idx ? { ...x, port_hopping_range: e.target.value || null } : x,
+                        ),
+                      ); }
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Outbound Tag (optional)</Label>
+                  <Input
+                    placeholder="direct / direct-campus / jp-hy2"
+                    value={ib.outbound_tag ?? ''}
+                    onChange={(e) => { setInbounds((prev) =>
+                        prev.map((x, i) =>
+                          i === idx ? { ...x, outbound_tag: e.target.value || null } : x,
                         ),
                       ); }
                     }
