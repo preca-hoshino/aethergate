@@ -8,11 +8,15 @@ use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::crypto::{generate_random_token, hash_token, pkce_s256_challenge};
+use crate::crypto::{
+    decrypt_secret, encrypt_secret, generate_random_token, hash_token, pkce_s256_challenge,
+};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -311,9 +315,18 @@ struct OidcStateRow {
 struct OidcTokenResponse {
     /// Access token used to query `userinfo`.
     access_token: String,
+    /// Optional refresh token for background profile/avatar sync.
+    #[serde(default)]
+    refresh_token: Option<String>,
+    /// Optional access token lifetime in seconds.
+    #[serde(default)]
+    expires_in: Option<i64>,
+    /// Optional signed ID token JWT containing fallback profile claims.
+    #[serde(default)]
+    id_token: Option<String>,
 }
 
-/// OIDC userinfo claims.
+/// OIDC userinfo / ID token claims.
 #[derive(Debug, Deserialize)]
 struct OidcUserInfo {
     /// Subject identifier.
@@ -326,6 +339,95 @@ struct OidcUserInfo {
     preferred_username: Option<String>,
     /// Optional avatar URL.
     picture: Option<String>,
+}
+
+/// Optional partial claims decoded from an ID token JWT payload.
+#[derive(Debug, Deserialize)]
+struct OidcIdTokenClaims {
+    /// Subject identifier.
+    sub: Option<String>,
+    /// Optional email.
+    email: Option<String>,
+    /// Optional display name.
+    name: Option<String>,
+    /// Optional preferred username.
+    preferred_username: Option<String>,
+    /// Optional avatar URL.
+    picture: Option<String>,
+}
+
+/// Decodes the unverified JSON payload from a JWT `id_token` returned directly by the token endpoint.
+fn decode_id_token_claims(id_token: &str) -> Option<OidcIdTokenClaims> {
+    let payload_b64 = id_token.split('.').nth(1)?.trim_end_matches('=');
+    let raw = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    serde_json::from_slice::<OidcIdTokenClaims>(&raw).ok()
+}
+
+/// Returns the first non-empty trimmed string from `primary` then `fallback`.
+fn first_non_empty(primary: Option<String>, fallback: Option<String>) -> Option<String> {
+    primary
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| fallback.filter(|s| !s.trim().is_empty()))
+}
+
+/// Merges `userinfo` and `id_token` claims so missing `picture`/`email`/`name` fall back cleanly.
+fn merge_oidc_claims(
+    userinfo: Option<OidcUserInfo>,
+    id_claims: Option<OidcIdTokenClaims>,
+) -> AppResult<OidcUserInfo> {
+    match (userinfo, id_claims) {
+        (Some(ui), Some(id)) => Ok(OidcUserInfo {
+            sub: ui.sub,
+            email: first_non_empty(ui.email, id.email),
+            name: first_non_empty(ui.name, id.name),
+            preferred_username: first_non_empty(ui.preferred_username, id.preferred_username),
+            picture: first_non_empty(ui.picture, id.picture),
+        }),
+        (Some(ui), None) => Ok(ui),
+        (None, Some(id)) => {
+            let sub = id
+                .sub
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| AppError::Unauthorized("OIDC id_token missing sub".to_owned()))?;
+            Ok(OidcUserInfo {
+                sub,
+                email: id.email,
+                name: id.name,
+                preferred_username: id.preferred_username,
+                picture: id.picture,
+            })
+        }
+        (None, None) => Err(AppError::BadRequest(
+            "OIDC userinfo_endpoint and id_token both unavailable".to_owned(),
+        )),
+    }
+}
+
+/// Fetches OIDC `userinfo` with a bearer access token, returning `Ok(None)` if unauthorized (`401`).
+async fn fetch_userinfo(
+    client: &reqwest::Client,
+    userinfo_url: &str,
+    access_token: &str,
+) -> AppResult<Option<OidcUserInfo>> {
+    let resp = client
+        .get(userinfo_url)
+        .timeout(std::time::Duration::from_secs(5))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC userinfo failed: {e}")))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(None);
+    }
+
+    let claims = resp
+        .error_for_status()
+        .map_err(|e| AppError::Unauthorized(format!("OIDC userinfo rejected: {e}")))?
+        .json::<OidcUserInfo>()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC userinfo JSON error: {e}")))?;
+    Ok(Some(claims))
 }
 
 /// `GET /api/v1/auth/oidc/callback` - exchanges code, runs JIT user provisioning, issues `HttpOnly` session.
@@ -385,24 +487,22 @@ pub async fn oidc_callback(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC token JSON error: {e}")))?;
 
-    let userinfo_url = doc
-        .userinfo_url
-        .ok_or_else(|| AppError::BadRequest("OIDC userinfo_endpoint missing".to_owned()))?;
+    let userinfo = if let Some(userinfo_url) = doc.userinfo_url.as_deref() {
+        Some(
+            fetch_userinfo(&state.http_client, userinfo_url, &token_resp.access_token)
+                .await?
+                .ok_or_else(|| AppError::Unauthorized("OIDC userinfo rejected token".to_owned()))?,
+        )
+    } else {
+        None
+    };
+    let id_claims = token_resp
+        .id_token
+        .as_deref()
+        .and_then(decode_id_token_claims);
+    let claims = merge_oidc_claims(userinfo, id_claims)?;
 
-    let claims = state
-        .http_client
-        .get(&userinfo_url)
-        .bearer_auth(&token_resp.access_token)
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC userinfo failed: {e}")))?
-        .error_for_status()
-        .map_err(|e| AppError::Unauthorized(format!("OIDC userinfo rejected: {e}")))?
-        .json::<OidcUserInfo>()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC userinfo JSON error: {e}")))?;
-
-    let user_id = upsert_jit_user(&state, &claims).await?;
+    let user_id = upsert_jit_user(&state, &claims, &token_resp).await?;
     let raw_session = generate_random_token(32);
     let session_hash = hash_token(&raw_session);
     let csrf_token = generate_random_token(24);
@@ -431,23 +531,76 @@ pub async fn oidc_callback(
     Ok(response)
 }
 
-/// Normalizes an OIDC `picture` claim to a safe HTTP(S) URL.
+/// Normalizes an OIDC `picture` claim to a safe HTTP(S) URL or raster `data:image/*;base64` URI.
 #[must_use]
 pub fn normalize_avatar_url(raw: Option<&str>) -> Option<String> {
     let trimmed = raw?.trim();
-    if trimmed.is_empty() || trimmed.len() > 2048 {
+    if trimmed.is_empty() {
         return None;
     }
-    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+    if (trimmed.starts_with("https://") || trimmed.starts_with("http://")) && trimmed.len() <= 4096
+    {
+        return Some(trimmed.to_owned());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let is_safe_raster_data = [
+        "data:image/png;base64,",
+        "data:image/jpeg;base64,",
+        "data:image/jpg;base64,",
+        "data:image/webp;base64,",
+        "data:image/gif;base64,",
+        "data:image/avif;base64,",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix));
+    if is_safe_raster_data && trimmed.len() <= 65_536 {
         Some(trimmed.to_owned())
     } else {
         None
     }
 }
 
+/// Encrypted OIDC token fields stored on `users`.
+#[derive(Debug)]
+struct SealedOidcTokens {
+    /// AES-256-GCM encrypted access token.
+    access_enc: Vec<u8>,
+    /// Optional AES-256-GCM encrypted refresh token.
+    refresh_enc: Option<Vec<u8>>,
+    /// Optional access token expiration timestamp.
+    expires_at: Option<DateTime<Utc>>,
+}
+
+/// Encrypts OIDC access/refresh tokens for storage on `users`.
+fn seal_oidc_tokens(
+    state: &AppState,
+    token_resp: &OidcTokenResponse,
+) -> AppResult<SealedOidcTokens> {
+    let access_enc = encrypt_secret(&state.master_key, token_resp.access_token.as_bytes())?;
+    let refresh_enc = token_resp
+        .refresh_token
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .map(|rt| encrypt_secret(&state.master_key, rt.as_bytes()))
+        .transpose()?;
+    let expires_at = token_resp
+        .expires_in
+        .filter(|&secs| secs > 0)
+        .map(|secs| Utc::now() + Duration::seconds(secs));
+    Ok(SealedOidcTokens {
+        access_enc,
+        refresh_enc,
+        expires_at,
+    })
+}
+
 /// Inserts or updates a JIT user from OIDC claims; new self-registered users start with
 /// `role='user'`, `proxy_enabled=false` unless listed in bootstrap admin config.
-async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<Uuid> {
+async fn upsert_jit_user(
+    state: &AppState,
+    claims: &OidcUserInfo,
+    token_resp: &OidcTokenResponse,
+) -> AppResult<Uuid> {
     let avatar_url = normalize_avatar_url(claims.picture.as_deref());
     let email = claims
         .email
@@ -455,6 +608,7 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .map(str::to_owned);
+    let tokens = seal_oidc_tokens(state, token_resp)?;
 
     if let Some((existing_id,)) =
         sqlx::query_as::<_, (Uuid,)>("SELECT id FROM users WHERE oidc_subject = $1")
@@ -467,6 +621,10 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
             UPDATE users
             SET avatar_url = COALESCE($2, avatar_url),
                 email = COALESCE($3, email),
+                oidc_access_token_enc = $4,
+                oidc_refresh_token_enc = COALESCE($5, oidc_refresh_token_enc),
+                oidc_token_expires_at = $6,
+                oidc_profile_synced_at = NOW(),
                 updated_at = NOW()
             WHERE id = $1
             ",
@@ -474,6 +632,9 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
         .bind(existing_id)
         .bind(&avatar_url)
         .bind(&email)
+        .bind(&tokens.access_enc)
+        .bind(&tokens.refresh_enc)
+        .bind(tokens.expires_at)
         .execute(&state.db)
         .await?;
         return Ok(existing_id);
@@ -513,9 +674,11 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
         r"
         INSERT INTO users (
             id, oidc_subject, email, avatar_url, display_name, role, panel_status,
-            proxy_enabled, proxy_username, proxy_uuid, proxy_password, sub_token
+            proxy_enabled, proxy_username, proxy_uuid, proxy_password, sub_token,
+            oidc_access_token_enc, oidc_refresh_token_enc, oidc_token_expires_at,
+            oidc_profile_synced_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, $12, $13, $14, NOW())
         ",
     )
     .bind(user_id)
@@ -529,10 +692,229 @@ async fn upsert_jit_user(state: &AppState, claims: &OidcUserInfo) -> AppResult<U
     .bind(proxy_uuid)
     .bind(&proxy_password)
     .bind(&sub_token)
+    .bind(&tokens.access_enc)
+    .bind(&tokens.refresh_enc)
+    .bind(tokens.expires_at)
     .execute(&state.db)
     .await?;
 
     Ok(user_id)
+}
+
+/// Stored OIDC token credentials for an existing user.
+#[derive(Debug, sqlx::FromRow)]
+struct UserOidcSyncRow {
+    /// User UUID.
+    id: Uuid,
+    /// OIDC subject identifier.
+    oidc_subject: String,
+    /// Encrypted OIDC access token.
+    oidc_access_token_enc: Option<Vec<u8>>,
+    /// Encrypted OIDC refresh token.
+    oidc_refresh_token_enc: Option<Vec<u8>>,
+    /// Access token expiry timestamp.
+    oidc_token_expires_at: Option<DateTime<Utc>>,
+}
+
+/// Outcome of attempting to sync a user's profile/avatar from OIDC.
+#[derive(Debug, Clone, Copy)]
+struct ProfileSyncOutcome {
+    /// Whether fresh claims were fetched from OIDC and saved.
+    synced: bool,
+}
+
+/// Summary of a batch background sync of OIDC user avatars.
+#[derive(Debug)]
+pub struct BatchAvatarSyncSummary {
+    /// Number of users successfully refreshed from OIDC.
+    pub synced_count: usize,
+}
+
+/// Exchanges a stored OIDC refresh token for fresh tokens.
+async fn refresh_oidc_tokens(
+    state: &AppState,
+    doc: &OidcDiscoveryDoc,
+    refresh_token: &str,
+) -> AppResult<Option<OidcTokenResponse>> {
+    let mut form: HashMap<&str, String> = HashMap::new();
+    form.insert("grant_type", "refresh_token".to_owned());
+    form.insert("refresh_token", refresh_token.to_owned());
+    form.insert("client_id", state.config.oidc.client_id.clone());
+    if !state.config.oidc.client_secret.is_empty() {
+        form.insert("client_secret", state.config.oidc.client_secret.clone());
+    }
+
+    let resp = state
+        .http_client
+        .post(&doc.token_url)
+        .timeout(std::time::Duration::from_secs(5))
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC token refresh failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let token_resp = resp
+        .json::<OidcTokenResponse>()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("OIDC refresh JSON error: {e}")))?;
+    Ok(Some(token_resp))
+}
+
+/// Persists updated OIDC profile claims (and optional rotated tokens) for a user.
+async fn persist_synced_oidc_profile(
+    state: &AppState,
+    row: &UserOidcSyncRow,
+    claims: &OidcUserInfo,
+    refreshed_tokens: Option<&OidcTokenResponse>,
+) -> AppResult<()> {
+    if claims.sub != row.oidc_subject {
+        return Err(AppError::Unauthorized(
+            "OIDC userinfo subject mismatch".to_owned(),
+        ));
+    }
+
+    let avatar_url = normalize_avatar_url(claims.picture.as_deref());
+    let email = claims
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_owned);
+
+    if let Some(tokens) = refreshed_tokens {
+        let sealed = seal_oidc_tokens(state, tokens)?;
+        sqlx::query(
+            r"
+            UPDATE users
+            SET avatar_url = COALESCE($2, avatar_url),
+                email = COALESCE($3, email),
+                oidc_access_token_enc = $4,
+                oidc_refresh_token_enc = COALESCE($5, oidc_refresh_token_enc),
+                oidc_token_expires_at = $6,
+                oidc_profile_synced_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(row.id)
+        .bind(&avatar_url)
+        .bind(&email)
+        .bind(&sealed.access_enc)
+        .bind(&sealed.refresh_enc)
+        .bind(sealed.expires_at)
+        .execute(&state.db)
+        .await?;
+    } else {
+        sqlx::query(
+            r"
+            UPDATE users
+            SET avatar_url = COALESCE($2, avatar_url),
+                email = COALESCE($3, email),
+                oidc_profile_synced_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(row.id)
+        .bind(&avatar_url)
+        .bind(&email)
+        .execute(&state.db)
+        .await?;
+    }
+
+    Ok(())
+}
+
+/// Syncs a single user's profile/avatar using stored OIDC access/refresh tokens.
+async fn sync_user_with_discovery(
+    state: &AppState,
+    doc: &OidcDiscoveryDoc,
+    row: &UserOidcSyncRow,
+) -> AppResult<ProfileSyncOutcome> {
+    if row.oidc_subject.starts_with("internal:") {
+        return Ok(ProfileSyncOutcome { synced: false });
+    }
+
+    let access_not_expired = row
+        .oidc_token_expires_at
+        .is_none_or(|exp| exp > Utc::now() + Duration::seconds(30));
+
+    if access_not_expired
+        && let Some(sealed_access) = row.oidc_access_token_enc.as_deref()
+        && let Some(userinfo_url) = doc.userinfo_url.as_deref()
+        && let Ok(raw_bytes) = decrypt_secret(&state.master_key, sealed_access)
+        && let Ok(access_token) = String::from_utf8(raw_bytes)
+        && let Some(claims) =
+            fetch_userinfo(&state.http_client, userinfo_url, &access_token).await?
+    {
+        persist_synced_oidc_profile(state, row, &claims, None).await?;
+        return Ok(ProfileSyncOutcome { synced: true });
+    }
+
+    if let Some(sealed_refresh) = row.oidc_refresh_token_enc.as_deref()
+        && let Ok(raw_bytes) = decrypt_secret(&state.master_key, sealed_refresh)
+        && let Ok(refresh_token) = String::from_utf8(raw_bytes)
+        && let Some(new_tokens) = refresh_oidc_tokens(state, doc, &refresh_token).await?
+    {
+        let userinfo = if let Some(userinfo_url) = doc.userinfo_url.as_deref() {
+            fetch_userinfo(&state.http_client, userinfo_url, &new_tokens.access_token).await?
+        } else {
+            None
+        };
+        let id_claims = new_tokens
+            .id_token
+            .as_deref()
+            .and_then(decode_id_token_claims);
+        if userinfo.is_some() || id_claims.is_some() {
+            let claims = merge_oidc_claims(userinfo, id_claims)?;
+            persist_synced_oidc_profile(state, row, &claims, Some(&new_tokens)).await?;
+            return Ok(ProfileSyncOutcome { synced: true });
+        }
+    }
+
+    Ok(ProfileSyncOutcome { synced: false })
+}
+
+/// Syncs all OIDC-backed users that have valid stored OIDC tokens.
+///
+/// # Errors
+/// Returns an error if OIDC is disabled, discovery fails, or a database query fails.
+pub async fn sync_all_oidc_user_profiles(state: &AppState) -> AppResult<BatchAvatarSyncSummary> {
+    if !state.config.oidc.enabled {
+        return Err(AppError::BadRequest(
+            "OIDC authentication is disabled".to_owned(),
+        ));
+    }
+
+    let doc = resolve_oidc_endpoints(state).await?;
+    let rows = sqlx::query_as::<_, UserOidcSyncRow>(
+        r"
+        SELECT id, oidc_subject, oidc_access_token_enc, oidc_refresh_token_enc, oidc_token_expires_at
+        FROM users
+        WHERE oidc_subject NOT LIKE 'internal:%'
+          AND (oidc_access_token_enc IS NOT NULL OR oidc_refresh_token_enc IS NOT NULL)
+        ",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut synced_count = 0_usize;
+
+    for row in &rows {
+        match sync_user_with_discovery(state, &doc, row).await {
+            Ok(outcome) if outcome.synced => synced_count += 1,
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!(user_id = %row.id, error = %err, "failed to sync OIDC user avatar");
+            }
+        }
+    }
+
+    Ok(BatchAvatarSyncSummary { synced_count })
 }
 
 /// Logout response payload.
@@ -567,9 +949,79 @@ pub async fn logout(
     Ok(resp)
 }
 
+/// Reloads mutable profile fields (`avatar_url`, `email`) after an OIDC sync.
+async fn reload_user_profile_fields(state: &AppState, user: &mut AuthUser) -> AppResult<()> {
+    if let Some((avatar_url, email)) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT avatar_url, email FROM users WHERE id = $1",
+    )
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await?
+    {
+        user.avatar_url = avatar_url;
+        user.email = email;
+    }
+    Ok(())
+}
+
 /// `GET /api/v1/auth/me`
-pub async fn get_me(AuthenticatedUser(user): AuthenticatedUser) -> Json<AuthUser> {
-    Json(user)
+pub async fn get_me(
+    State(state): State<AppState>,
+    AuthenticatedUser(mut user): AuthenticatedUser,
+) -> AppResult<Json<AuthUser>> {
+    if state.config.oidc.enabled && !user.oidc_subject.starts_with("internal:") {
+        let sync_meta = sqlx::query_as::<
+            _,
+            (
+                Option<DateTime<Utc>>,
+                Option<Vec<u8>>,
+                Option<Vec<u8>>,
+                Option<DateTime<Utc>>,
+            ),
+        >(
+            r"
+            SELECT oidc_profile_synced_at, oidc_access_token_enc, oidc_refresh_token_enc, oidc_token_expires_at
+            FROM users
+            WHERE id = $1
+            ",
+        )
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await?;
+
+        if let Some((synced_at, access_enc, refresh_enc, token_expires_at)) = sync_meta
+            && (access_enc.is_some() || refresh_enc.is_some())
+        {
+            let stale_secs = if user.avatar_url.is_none() { 60 } else { 300 };
+            let is_stale =
+                synced_at.is_none_or(|ts| Utc::now() - ts >= Duration::seconds(stale_secs));
+            if is_stale {
+                let row = UserOidcSyncRow {
+                    id: user.id,
+                    oidc_subject: user.oidc_subject.clone(),
+                    oidc_access_token_enc: access_enc,
+                    oidc_refresh_token_enc: refresh_enc,
+                    oidc_token_expires_at: token_expires_at,
+                };
+                match resolve_oidc_endpoints(&state).await {
+                    Ok(doc) => match sync_user_with_discovery(&state, &doc, &row).await {
+                        Ok(outcome) if outcome.synced => {
+                            reload_user_profile_fields(&state, &mut user).await?;
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::debug!(user_id = %user.id, error = %err, "auto OIDC profile sync skipped");
+                        }
+                    },
+                    Err(err) => {
+                        tracing::debug!(user_id = %user.id, error = %err, "OIDC discovery skipped in /auth/me");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(user))
 }
 
 /// Formats an `HttpOnly`, `SameSite=Lax` session cookie header value.
@@ -599,8 +1051,41 @@ mod tests {
             normalize_avatar_url(Some("  https://cdn.example/a.png ")).as_deref(),
             Some("https://cdn.example/a.png")
         );
+        assert_eq!(
+            normalize_avatar_url(Some("data:image/png;base64,iVBORw0KGgo=")).as_deref(),
+            Some("data:image/png;base64,iVBORw0KGgo=")
+        );
+        assert_eq!(
+            normalize_avatar_url(Some("data:image/svg+xml;base64,PHN2Zz4=")),
+            None
+        );
         assert_eq!(normalize_avatar_url(Some("javascript:alert(1)")), None);
         assert_eq!(normalize_avatar_url(Some("   ")), None);
         assert_eq!(normalize_avatar_url(None), None);
+    }
+
+    #[test]
+    fn merge_oidc_claims_falls_back_to_id_token_picture() {
+        let id_token_payload = URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"u1","picture":"https://cdn.example/id.png","email":"a@b.c"}"#);
+        let jwt = format!("hdr.{id_token_payload}.sig");
+        let id_claims = decode_id_token_claims(&jwt);
+        let userinfo = Some(OidcUserInfo {
+            sub: "u1".to_owned(),
+            email: None,
+            name: Some("Alice".to_owned()),
+            preferred_username: None,
+            picture: Some("   ".to_owned()),
+        });
+        let merged = merge_oidc_claims(userinfo, id_claims);
+        assert!(merged.is_ok());
+        if let Ok(claims) = merged {
+            assert_eq!(
+                claims.picture.as_deref(),
+                Some("https://cdn.example/id.png")
+            );
+            assert_eq!(claims.email.as_deref(), Some("a@b.c"));
+            assert_eq!(claims.name.as_deref(), Some("Alice"));
+        }
     }
 }
