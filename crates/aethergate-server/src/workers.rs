@@ -21,7 +21,7 @@ pub fn spawn_background_workers(state: AppState) {
         }
     });
 
-    let ws_state = state;
+    let ws_state = state.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(2));
         loop {
@@ -37,6 +37,30 @@ pub fn spawn_background_workers(state: AppState) {
             }
         }
     });
+
+    if state.config.oidc.enabled {
+        let oidc_state = state;
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(600));
+            ticker.tick().await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            loop {
+                match crate::auth::sync_all_oidc_user_profiles(&oidc_state).await {
+                    Ok(summary) if summary.synced_count > 0 => {
+                        tracing::info!(
+                            synced_count = summary.synced_count,
+                            "background OIDC avatar sync completed"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::debug!(error = %err, "background OIDC avatar sync skipped");
+                    }
+                }
+                ticker.tick().await;
+            }
+        });
+    }
 }
 
 /// Marks silent nodes offline and purges expired sessions, OIDC states, and old dedup keys.
