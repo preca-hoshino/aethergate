@@ -138,6 +138,8 @@ fn default_sub_format() -> String {
 struct SubUserRow {
     /// User UUID.
     id: Uuid,
+    /// Account type (`"user"` or `"relay"`).
+    account_type: String,
     /// Whether proxy access is active.
     proxy_enabled: bool,
     /// Panel account status.
@@ -203,12 +205,13 @@ pub async fn load_authorized_inbounds_for_user(
             n.name AS node_name,
             n.host,
             n.region,
-            n.tls_profile AS tls_profile_json,
+            COALESCE(p.tls_profile, n.tls_profile) AS tls_profile_json,
             ni.tag,
             ni.listen_port,
             ni.port_range,
             ni.protocol_config AS protocol_config_json
         FROM nodes n
+        LEFT JOIN nodes p ON p.id = n.parent_node_id
         JOIN node_inbounds ni ON ni.node_id = n.id AND ni.enabled = TRUE
         WHERE n.id IN (
             SELECT node_id FROM user_node_grants WHERE user_id = $1
@@ -600,12 +603,18 @@ pub async fn get_subscription(
     Query(query): Query<SubscriptionQuery>,
 ) -> AppResult<Response> {
     let user = sqlx::query_as::<_, SubUserRow>(
-        "SELECT id, proxy_enabled, panel_status, proxy_uuid, proxy_password FROM users WHERE sub_token = $1",
+        "SELECT id, account_type, proxy_enabled, panel_status, proxy_uuid, proxy_password FROM users WHERE sub_token = $1",
     )
     .bind(&token)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound("subscription token not found".to_owned()))?;
+
+    if user.account_type == "relay" {
+        return Err(AppError::Forbidden(
+            "relay service accounts do not expose end-user subscriptions".to_owned(),
+        ));
+    }
 
     if user.panel_status != "active" || !user.proxy_enabled {
         return Err(AppError::Forbidden(

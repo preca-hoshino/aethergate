@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
+  Activity,
   BarChart3,
   Boxes,
   Calendar,
@@ -51,6 +52,7 @@ const GENERAL_NAV = [
 ] as const
 
 const OTHER_NAV = [
+  { label: 'My Portal', to: '/portal', icon: Activity },
   { label: 'Audit Logs', to: '/audit-logs', icon: FileText },
   { label: 'Settings', to: '/settings', icon: Settings },
 ] as const

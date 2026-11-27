@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Ban, CheckCircle2, KeyRound, ShieldCheck, UserX } from 'lucide-react'
+import { Ban, CheckCircle2, Copy, KeyRound, Plus, ShieldCheck, UserX } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
 import { formatBytes } from '@/lib/formatters'
@@ -18,8 +18,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+
+interface CreatedUserResult {
+  id: string
+  proxy_username: string
+  proxy_uuid: string
+  proxy_password: string
+  account_type: 'user' | 'relay'
+}
 
 export function UsersPage() {
   const month = useAppStore((s) => s.selectedMonth)
@@ -28,6 +39,15 @@ export function UsersPage() {
   const [grantUserId, setGrantUserId] = useState<string | null>(null)
   const [nodeIds, setNodeIds] = useState<string[]>([])
   const [groupIds, setGroupIds] = useState<string[]>([])
+
+  const [createOpen, setCreateOpen] = useState(false)
+  const [displayName, setDisplayName] = useState('')
+  const [accountType, setAccountType] = useState<'relay' | 'user'>('relay')
+  const [proxyUsername, setProxyUsername] = useState('')
+  const [proxyUuid, setProxyUuid] = useState('')
+  const [proxyPassword, setProxyPassword] = useState('')
+  const [createNodeIds, setCreateNodeIds] = useState<string[]>([])
+  const [createdUser, setCreatedUser] = useState<CreatedUserResult | null>(null)
 
   const { data: users = [] } = useQuery({
     queryKey: ['users', month],
@@ -93,6 +113,24 @@ export function UsersPage() {
     onSuccess: () => toast.success('Kick command dispatched to authorized nodes'),
   })
 
+  const createUserMutation = useMutation({
+    mutationFn: () =>
+      api.post<CreatedUserResult>('/api/v1/users', {
+        display_name: displayName.trim(),
+        account_type: accountType,
+        proxy_username: proxyUsername.trim() || undefined,
+        proxy_uuid: proxyUuid.trim() || undefined,
+        proxy_password: proxyPassword || undefined,
+        node_ids: createNodeIds,
+      }),
+    onSuccess: (res) => {
+      setCreatedUser(res)
+      void queryClient.invalidateQueries({ queryKey: ['users'] })
+      toast.success(`Created ${res.account_type} account (${res.proxy_username})`)
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   const filtered = users.filter((u) => {
     if (filter === 'pending') return !u.proxy_enabled
     if (filter === 'active') return u.proxy_enabled
@@ -103,11 +141,28 @@ export function UsersPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Users &amp; Approvals</h1>
-        <p className="text-muted-foreground text-sm">
-          Approve OIDC self-registered accounts, assign node/group permissions, and monitor monthly traffic.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Users &amp; Approvals</h1>
+          <p className="text-muted-foreground text-sm">
+            Approve OIDC self-registered accounts, manage relay service accounts, and monitor monthly traffic.
+          </p>
+        </div>
+        <Button
+          onClick={() => {
+            setCreatedUser(null)
+            setDisplayName('')
+            setAccountType('relay')
+            setProxyUsername('')
+            setProxyUuid('')
+            setProxyPassword('')
+            setCreateNodeIds([])
+            setCreateOpen(true)
+          }}
+        >
+          <Plus className="size-4" />
+          Create Relay / Bridge User
+        </Button>
       </div>
 
       <Tabs value={filter} onValueChange={(v) => { setFilter(v as typeof filter); }}>
@@ -146,7 +201,10 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell className="font-mono text-xs">{u.proxy_username}</TableCell>
                   <TableCell>
-                    <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>{u.role}</Badge>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>{u.role}</Badge>
+                      {u.account_type === 'relay' && <Badge variant="outline">relay</Badge>}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Badge variant={u.proxy_enabled ? 'success' : 'warning'}>
@@ -274,6 +332,154 @@ export function UsersPage() {
                   Save Grants
                 </Button>
               )
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={createOpen}
+        onOpenChange={(o) => {
+          setCreateOpen(o)
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create Relay Service Account / Bridge User</DialogTitle>
+            <DialogDescription>
+              Relay accounts exclude traffic from end-user billing rankings and return 403 on public subscription links.
+            </DialogDescription>
+          </DialogHeader>
+
+          {createdUser ? (
+            <div className="space-y-3 rounded-md border p-3 text-sm">
+              <div className="font-medium text-emerald-600 dark:text-emerald-400">
+                Account created ({createdUser.account_type})
+              </div>
+              <div className="space-y-1 font-mono text-xs">
+                <div>Username: {createdUser.proxy_username}</div>
+                <div>UUID: {createdUser.proxy_uuid}</div>
+                <div>Password: {createdUser.proxy_password}</div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void navigator.clipboard.writeText(
+                    `username=${createdUser.proxy_username}\nuuid=${createdUser.proxy_uuid}\npassword=${createdUser.proxy_password}`,
+                  )
+                  toast.success('Credentials copied')
+                }}
+              >
+                <Copy className="size-3.5" />
+                Copy Credentials
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <Label>Display Name</Label>
+                  <Input
+                    value={displayName}
+                    onChange={(e) => {
+                      setDisplayName(e.target.value)
+                    }}
+                    placeholder="cn-sha-02 -> jp-hnd-01 relay"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Account Type</Label>
+                  <Select
+                    value={accountType}
+                    onValueChange={(v) => {
+                      setAccountType(v as 'relay' | 'user')
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="relay">relay (Service / Transit)</SelectItem>
+                      <SelectItem value="user">user (Legacy Migration Bridge)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <Label>Proxy Username (optional)</Label>
+                  <Input
+                    value={proxyUsername}
+                    onChange={(e) => {
+                      setProxyUsername(e.target.value)
+                    }}
+                    placeholder="relay_cn_sha_02"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Proxy UUID (optional)</Label>
+                  <Input
+                    value={proxyUuid}
+                    onChange={(e) => {
+                      setProxyUuid(e.target.value)
+                    }}
+                    placeholder="auto-generated if blank"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label>Proxy Password (optional)</Label>
+                <Input
+                  value={proxyPassword}
+                  onChange={(e) => {
+                    setProxyPassword(e.target.value)
+                  }}
+                  placeholder="auto-generated 24-char token if blank"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Authorized Nodes</Label>
+                <div className="max-h-36 space-y-2 overflow-y-auto rounded-md border p-2">
+                  {nodes.map((n) => (
+                    <label key={n.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={createNodeIds.includes(n.id)}
+                        onCheckedChange={(checked) => {
+                          setCreateNodeIds((prev) =>
+                            checked ? [...prev, n.id] : prev.filter((id) => id !== n.id),
+                          )
+                        }}
+                      />
+                      <span>{n.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            {createdUser ? (
+              <Button
+                onClick={() => {
+                  setCreateOpen(false)
+                }}
+              >
+                Done
+              </Button>
+            ) : (
+              <Button
+                disabled={!displayName.trim() || createUserMutation.isPending}
+                onClick={() => {
+                  createUserMutation.mutate()
+                }}
+              >
+                Create Account
+              </Button>
             )}
           </DialogFooter>
         </DialogContent>

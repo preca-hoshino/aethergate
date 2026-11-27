@@ -93,6 +93,7 @@ export interface UserSummary {
   display_name: string
   email: string | null
   role: 'admin' | 'user'
+  account_type: 'user' | 'relay'
   panel_status: 'active' | 'disabled'
   proxy_enabled: boolean
   proxy_username: string

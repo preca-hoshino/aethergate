@@ -1,7 +1,6 @@
 //! Hysteria 2-inspired Node Open API (`/api/open/v1/*`) secured by per-node HMAC-SHA256.
 
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::Json;
@@ -11,7 +10,6 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
-use futures::Stream;
 use futures::stream::unfold;
 use serde::Deserialize;
 use serde_json::Value;
@@ -174,12 +172,18 @@ pub async fn open_auth_client(
           AND u.proxy_password = $1
           AND ($2::text IS NULL OR u.proxy_username = $2)
           AND (
-              EXISTS (SELECT 1 FROM user_node_grants ung WHERE ung.user_id = u.id AND ung.node_id = $3)
+              EXISTS (
+                  SELECT 1
+                  FROM user_node_grants ung
+                  JOIN nodes n ON n.id = ung.node_id
+                  WHERE ung.user_id = u.id AND (n.id = $3 OR n.parent_node_id = $3)
+              )
               OR EXISTS (
                   SELECT 1
                   FROM user_node_group_grants ungg
                   JOIN node_group_members ngm ON ngm.group_id = ungg.group_id
-                  WHERE ungg.user_id = u.id AND ngm.node_id = $3
+                  JOIN nodes n ON n.id = ngm.node_id
+                  WHERE ungg.user_id = u.id AND (n.id = $3 OR n.parent_node_id = $3)
               )
           )
         LIMIT 1
@@ -640,15 +644,15 @@ pub async fn open_report_status(
             cadence_mode = $2,
             agent_version = $3,
             singbox_version = $4,
-            cpu_pct = $5,
-            mem_pct = $6,
-            mem_used_mib = $7,
-            active_connections = $8,
-            active_users = $9,
+            cpu_pct = CASE WHEN id = $1 THEN $5 ELSE cpu_pct END,
+            mem_pct = CASE WHEN id = $1 THEN $6 ELSE mem_pct END,
+            mem_used_mib = CASE WHEN id = $1 THEN $7 ELSE mem_used_mib END,
+            active_connections = CASE WHEN id = $1 THEN $8 ELSE 0 END,
+            active_users = CASE WHEN id = $1 THEN $9 ELSE active_users END,
             uptime_secs = $10,
             last_seen_at = NOW(),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 OR parent_node_id = $1
         ",
     )
     .bind(node.id)
@@ -701,7 +705,7 @@ pub async fn open_report_telemetry(
 
     let _ = ingest_telemetry_batch(&state, node.id, &batch).await?;
 
-    sqlx::query("UPDATE nodes SET status = 'online', last_seen_at = NOW() WHERE id = $1")
+    sqlx::query("UPDATE nodes SET status = 'online', last_seen_at = NOW() WHERE id = $1 OR parent_node_id = $1")
         .bind(node.id)
         .execute(&state.db)
         .await?;
@@ -733,7 +737,7 @@ pub async fn open_sse_events(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+) -> AppResult<Response> {
     let node = authenticate_node(&state, &method, &uri, &headers, &[]).await?;
     let rx = state.node_sse_sender(node.id).subscribe();
 
@@ -743,7 +747,12 @@ pub async fn open_sse_events(
                 Ok(ev) => {
                     let name = ev.event_name();
                     if let Ok(data) = serde_json::to_string(&ev) {
-                        return Some((Ok(Event::default().event(name).data(data)), rx));
+                        return Some((
+                            Ok::<Event, std::convert::Infallible>(
+                                Event::default().event(name).data(data),
+                            ),
+                            rx,
+                        ));
                     }
                 }
                 Err(RecvError::Lagged(_)) => {}
@@ -752,11 +761,21 @@ pub async fn open_sse_events(
         }
     });
 
-    Ok(Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(25))
-            .text("keep-alive"),
-    ))
+    Ok((
+        [
+            (
+                header::HeaderName::from_static("x-accel-buffering"),
+                HeaderValue::from_static("no"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+        ],
+        Sse::new(stream).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(25))
+                .text("keep-alive"),
+        ),
+    )
+        .into_response())
 }
 
 /// `POST /api/open/v1/commands/{id}/ack` - marks an executed command acknowledged (`204 No Content`).

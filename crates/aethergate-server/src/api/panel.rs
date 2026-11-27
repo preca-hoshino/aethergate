@@ -59,6 +59,29 @@ async fn record_audit_log(
     Ok(())
 }
 
+/// Resolves a logical or physical node ID to its underlying physical host node UUID.
+async fn resolve_physical_node_id(state: &AppState, node_id: Uuid) -> AppResult<Uuid> {
+    let target: Option<Uuid> =
+        sqlx::query_scalar("SELECT COALESCE(parent_node_id, id) FROM nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_optional(&state.db)
+            .await?;
+    target.ok_or_else(|| AppError::NotFound("node not found".to_owned()))
+}
+
+/// Maps a list of logical or physical node IDs to distinct physical host node UUIDs.
+async fn resolve_physical_node_ids(state: &AppState, node_ids: &[Uuid]) -> AppResult<Vec<Uuid>> {
+    let mut visited = HashSet::new();
+    let mut out = Vec::new();
+    for &nid in node_ids {
+        let target = resolve_physical_node_id(state, nid).await?;
+        if visited.insert(target) {
+            out.push(target);
+        }
+    }
+    Ok(out)
+}
+
 /// Records an incremental user delta (`upsert` or `revoke`) on a set of nodes and pushes SSE.
 async fn emit_user_deltas(
     state: &AppState,
@@ -551,12 +574,22 @@ pub async fn update_node(
     }
 
     if bump_cfg {
-        let cfg_rev: i64 = sqlx::query_scalar("SELECT config_revision FROM nodes WHERE id = $1")
-            .bind(node_id)
-            .fetch_one(&state.db)
-            .await?;
+        let target_id = resolve_physical_node_id(&state, node_id).await?;
+        let cfg_rev: i64 = sqlx::query_scalar(
+            r"
+            UPDATE nodes
+            SET config_revision = CASE WHEN id = $2 THEN config_revision ELSE config_revision + 1 END,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING config_revision
+            ",
+        )
+        .bind(target_id)
+        .bind(node_id)
+        .fetch_one(&state.db)
+        .await?;
         state.push_node_event(
-            node_id,
+            target_id,
             NodeSseEvent::ConfigChanged {
                 config_revision: cfg_rev,
             },
@@ -611,6 +644,54 @@ pub struct ReplaceInboundsRequest {
     pub inbounds: Vec<NodeInboundSpec>,
 }
 
+/// Converts a stored database inbound row into a protocol [`NodeInboundSpec`].
+fn inbound_record_to_spec(idx: usize, row: InboundRecordRow) -> AppResult<NodeInboundSpec> {
+    let protocol_config: aethergate_protocol::InboundProtocolConfig =
+        serde_json::from_value(row.protocol_config)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid inbound JSON: {e}")))?;
+    Ok(NodeInboundSpec {
+        id: row.id,
+        protocol: protocol_config.protocol_type(),
+        tag: row.tag,
+        enabled: row.enabled,
+        listen: row.listen,
+        listen_port: u16::try_from(row.listen_port).unwrap_or(443),
+        port_hopping_range: row.port_range,
+        protocol_config,
+        sort_order: i16::try_from(idx).unwrap_or(0),
+        outbound_tag: row.outbound_tag,
+        allowed_usernames: None,
+    })
+}
+
+/// Loads all sibling inbounds on the same physical host (excluding `node_id`) for port validation.
+async fn load_sibling_inbounds(
+    state: &AppState,
+    node_id: Uuid,
+    physical_node_id: Uuid,
+) -> AppResult<Vec<NodeInboundSpec>> {
+    let sibling_rows = sqlx::query_as::<_, InboundRecordRow>(
+        r"
+        SELECT ni.id, ni.tag, ni.listen, ni.listen_port, ni.port_range, ni.outbound_tag, ni.protocol_config, ni.enabled
+        FROM node_inbounds ni
+        JOIN nodes n ON n.id = ni.node_id
+        WHERE ni.node_id != $1
+          AND (n.id = $2 OR n.parent_node_id = $2)
+        ORDER BY ni.sort_order ASC, ni.listen_port ASC
+        ",
+    )
+    .bind(node_id)
+    .bind(physical_node_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut out = Vec::with_capacity(sibling_rows.len());
+    for (idx, row) in sibling_rows.into_iter().enumerate() {
+        out.push(inbound_record_to_spec(idx, row)?);
+    }
+    Ok(out)
+}
+
 /// `PUT /api/v1/nodes/{id}/inbounds` - validates TCP/UDP port non-overlap and pushes SSE config update.
 pub async fn replace_node_inbounds(
     State(state): State<AppState>,
@@ -618,7 +699,10 @@ pub async fn replace_node_inbounds(
     Path(node_id): Path<Uuid>,
     Json(req): Json<ReplaceInboundsRequest>,
 ) -> AppResult<Json<Value>> {
-    validate_inbound_ports(&req.inbounds).map_err(|e| AppError::Conflict(e.to_string()))?;
+    let physical_node_id = resolve_physical_node_id(&state, node_id).await?;
+    let mut host_inbounds = load_sibling_inbounds(&state, node_id, physical_node_id).await?;
+    host_inbounds.extend(req.inbounds.iter().cloned());
+    validate_inbound_ports(&host_inbounds).map_err(|e| AppError::Conflict(e.to_string()))?;
 
     let mut tx = state.db.begin().await?;
     sqlx::query("DELETE FROM node_inbounds WHERE node_id = $1")
@@ -707,6 +791,7 @@ pub async fn update_node_tls_profile(
 ) -> AppResult<Json<Value>> {
     let tls_json = serde_json::to_value(&tls)
         .map_err(|e| AppError::BadRequest(format!("invalid TLS profile: {e}")))?;
+    let target_id = resolve_physical_node_id(&state, node_id).await?;
 
     let config_revision: i64 = sqlx::query_scalar(
         r"
@@ -716,19 +801,31 @@ pub async fn update_node_tls_profile(
         RETURNING config_revision
         ",
     )
-    .bind(node_id)
-    .bind(tls_json)
+    .bind(target_id)
+    .bind(&tls_json)
     .fetch_one(&state.db)
     .await?;
 
-    state.push_node_event(node_id, NodeSseEvent::ConfigChanged { config_revision });
+    sqlx::query(
+        r"
+        UPDATE nodes
+        SET tls_profile = $2, updated_at = NOW()
+        WHERE parent_node_id = $1
+        ",
+    )
+    .bind(target_id)
+    .bind(&tls_json)
+    .execute(&state.db)
+    .await?;
+
+    state.push_node_event(target_id, NodeSseEvent::ConfigChanged { config_revision });
     record_audit_log(
         &state,
         admin.id,
         "node.tls.update",
         "node",
-        Some(&node_id.to_string()),
-        json!({ "config_revision": config_revision }),
+        Some(&target_id.to_string()),
+        json!({ "config_revision": config_revision, "requested_node_id": node_id }),
     )
     .await?;
 
@@ -786,19 +883,20 @@ pub async fn issue_node_command(
     Path(node_id): Path<Uuid>,
     Json(req): Json<IssueNodeCommandRequest>,
 ) -> AppResult<(StatusCode, Json<Value>)> {
+    let target_id = resolve_physical_node_id(&state, node_id).await?;
     let command_id = Uuid::new_v4();
     let payload = json!({ "proxy_username": req.proxy_username });
 
     sqlx::query("INSERT INTO node_commands (id, node_id, action, payload) VALUES ($1, $2, $3, $4)")
         .bind(command_id)
-        .bind(node_id)
+        .bind(target_id)
         .bind(&req.action)
         .bind(payload)
         .execute(&state.db)
         .await?;
 
     state.push_node_event(
-        node_id,
+        target_id,
         NodeSseEvent::CommandIssued {
             command_id,
             action: req.action.clone(),
@@ -811,8 +909,12 @@ pub async fn issue_node_command(
         admin.id,
         "node.command.issue",
         "node",
-        Some(&node_id.to_string()),
-        json!({ "command_id": command_id, "action": req.action }),
+        Some(&target_id.to_string()),
+        json!({
+            "command_id": command_id,
+            "action": req.action,
+            "requested_node_id": node_id
+        }),
     )
     .await?;
 
@@ -1409,6 +1511,38 @@ pub struct ReplaceUserGrantsRequest {
     pub group_ids: Vec<Uuid>,
 }
 
+/// Bumps `config_revision` and pushes `ConfigChanged` once per parent when child logical grants change.
+async fn bump_parent_configs_for_changed_logical_nodes(
+    state: &AppState,
+    changed_node_ids: &[Uuid],
+) -> AppResult<()> {
+    if changed_node_ids.is_empty() {
+        return Ok(());
+    }
+    let parent_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT DISTINCT parent_node_id FROM nodes WHERE id = ANY($1) AND parent_node_id IS NOT NULL",
+    )
+    .bind(changed_node_ids)
+    .fetch_all(&state.db)
+    .await?;
+
+    for parent_id in parent_ids {
+        let cfg_rev: i64 = sqlx::query_scalar(
+            "UPDATE nodes SET config_revision = config_revision + 1, updated_at = NOW() WHERE id = $1 RETURNING config_revision",
+        )
+        .bind(parent_id)
+        .fetch_one(&state.db)
+        .await?;
+        state.push_node_event(
+            parent_id,
+            NodeSseEvent::ConfigChanged {
+                config_revision: cfg_rev,
+            },
+        );
+    }
+    Ok(())
+}
+
 /// `PUT /api/v1/users/{id}/grants`
 pub async fn replace_user_grants(
     State(state): State<AppState>,
@@ -1424,7 +1558,9 @@ pub async fn replace_user_grants(
     .await?
     .ok_or_else(|| AppError::NotFound("user not found".to_owned()))?;
 
-    let old_nodes: HashSet<Uuid> = list_user_granted_node_ids(&state, user_id)
+    let old_node_list = list_user_granted_node_ids(&state, user_id).await?;
+    let old_nodes: HashSet<Uuid> = old_node_list.iter().copied().collect();
+    let old_physical: HashSet<Uuid> = resolve_physical_node_ids(&state, &old_node_list)
         .await?
         .into_iter()
         .collect();
@@ -1455,18 +1591,33 @@ pub async fn replace_user_grants(
     }
     tx.commit().await?;
 
-    let new_nodes: HashSet<Uuid> = list_user_granted_node_ids(&state, user_id)
+    let new_node_list = list_user_granted_node_ids(&state, user_id).await?;
+    let new_nodes: HashSet<Uuid> = new_node_list.iter().copied().collect();
+    let new_physical: HashSet<Uuid> = resolve_physical_node_ids(&state, &new_node_list)
         .await?
         .into_iter()
         .collect();
 
-    let removed: Vec<Uuid> = old_nodes.difference(&new_nodes).copied().collect();
-    emit_user_deltas(&state, &removed, "revoke", user_id, &proxy_username).await?;
+    let removed_physical: Vec<Uuid> = old_physical.difference(&new_physical).copied().collect();
+    emit_user_deltas(
+        &state,
+        &removed_physical,
+        "revoke",
+        user_id,
+        &proxy_username,
+    )
+    .await?;
 
     if proxy_active {
-        let active: Vec<Uuid> = new_nodes.into_iter().collect();
-        emit_user_deltas(&state, &active, "upsert", user_id, &proxy_username).await?;
+        let active_physical: Vec<Uuid> = new_physical.iter().copied().collect();
+        emit_user_deltas(&state, &active_physical, "upsert", user_id, &proxy_username).await?;
     }
+
+    let changed_nodes: Vec<Uuid> = old_nodes
+        .symmetric_difference(&new_nodes)
+        .copied()
+        .collect();
+    bump_parent_configs_for_changed_logical_nodes(&state, &changed_nodes).await?;
 
     record_audit_log(
         &state,
@@ -1520,7 +1671,8 @@ pub async fn kick_user_connections(
             .await?
             .ok_or_else(|| AppError::NotFound("user not found".to_owned()))?;
 
-    let node_ids = list_user_granted_node_ids(&state, user_id).await?;
+    let granted_ids = list_user_granted_node_ids(&state, user_id).await?;
+    let node_ids = resolve_physical_node_ids(&state, &granted_ids).await?;
     for &nid in &node_ids {
         let cmd_id = Uuid::new_v4();
         sqlx::query(
@@ -1600,7 +1752,7 @@ pub async fn get_analytics_overview(
         SELECT
             COUNT(*) FILTER (WHERE status = 'online')::bigint,
             COUNT(*)::bigint,
-            COALESCE(SUM(active_connections) FILTER (WHERE status = 'online'), 0)::bigint
+            COALESCE(SUM(active_connections) FILTER (WHERE status = 'online' AND parent_node_id IS NULL), 0)::bigint
         FROM nodes
         ",
     )
@@ -1610,8 +1762,8 @@ pub async fn get_analytics_overview(
     let (active_proxy_users, pending_approval_users) = sqlx::query_as::<_, (i64, i64)>(
         r"
         SELECT
-            COUNT(*) FILTER (WHERE proxy_enabled = TRUE AND panel_status = 'active')::bigint,
-            COUNT(*) FILTER (WHERE proxy_enabled = FALSE AND panel_status = 'active' AND role = 'user')::bigint
+            COUNT(*) FILTER (WHERE proxy_enabled = TRUE AND panel_status = 'active' AND account_type = 'user')::bigint,
+            COUNT(*) FILTER (WHERE proxy_enabled = FALSE AND panel_status = 'active' AND role = 'user' AND account_type = 'user')::bigint
         FROM users
         ",
     )
@@ -1666,6 +1818,7 @@ pub async fn get_analytics_users(
             COALESCE(t.peak_downlink_bps, 0) AS peak_downlink_bps
         FROM users u
         LEFT JOIN user_monthly_traffic t ON t.user_id = u.id AND t.stat_month = $1
+        WHERE u.account_type = 'user'
         ORDER BY (COALESCE(t.uplink_bytes, 0) + COALESCE(t.downlink_bytes, 0)) DESC
         ",
     )

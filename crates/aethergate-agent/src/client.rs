@@ -225,17 +225,29 @@ impl OpenApiClient {
     pub async fn listen_sse(&self, tx: tokio::sync::mpsc::Sender<NodeSseEvent>) -> Result<()> {
         let path = "/api/open/v1/events";
         let headers = self.signed_headers("GET", path, b"")?;
-        let sse_client = reqwest::Client::new();
+        let sse_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .build()
+            .context("building SSE HTTP client")?;
         let mut resp = sse_client
             .get(format!("{}{path}", self.base_url))
             .headers(headers)
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .context("connecting SSE stream")?
+            .error_for_status()
+            .context("SSE endpoint returned error status")?;
 
         let mut buf = String::new();
-        while let Some(chunk) = resp.chunk().await? {
-            buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(chunk) =
+            tokio::time::timeout(std::time::Duration::from_secs(90), resp.chunk())
+                .await
+                .context("SSE keep-alive timed out after 90s")?
+                .context("reading SSE chunk")?
+        {
+            let text = String::from_utf8_lossy(&chunk).replace("\r\n", "\n");
+            buf.push_str(&text);
             while let Some(idx) = buf.find("\n\n") {
                 let frame = buf[..idx].to_owned();
                 buf.drain(..idx + 2);

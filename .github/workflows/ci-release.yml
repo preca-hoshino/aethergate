@@ -91,10 +91,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install musl cross tools (Linux)
+      - name: Install Zig and cargo-zigbuild (Linux musl cross-link)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
-      - name: Build Binary
+        uses: mlugg/setup-zig@v2
+      - uses: taiki-e/install-action@cargo-zigbuild
+        if: runner.os == 'Linux'
+      - name: Build Binary (Linux musl via cargo-zigbuild)
+        if: runner.os == 'Linux'
+        run: |
+          cargo zigbuild --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
+          mkdir -p dist-bin
+          cp "target/${{ matrix.target }}/release/${{ matrix.pkg }}${{ matrix.ext }}" "dist-bin/${{ matrix.pkg }}-${{ matrix.target }}${{ matrix.ext }}"
+      - name: Build Binary (Windows / macOS)
+        if: runner.os != 'Linux'
         run: |
           cargo build --release --locked -p ${{ matrix.pkg }} --target ${{ matrix.target }}
           mkdir -p dist-bin
@@ -103,6 +112,32 @@ jobs:
         with:
           name: ${{ matrix.pkg }}-${{ matrix.target }}
           path: dist-bin/*
+
+  build-singbox:
+    needs: quality-gates
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Build sing-box v1.13.14 with with_v2ray_api (${{ matrix.goarch }})
+        run: |
+          git clone --depth 1 --branch v1.13.14 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+          cd /tmp/sing-box
+          mkdir -p "${GITHUB_WORKSPACE}/dist-singbox"
+          CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}" go build \
+            -trimpath -ldflags "-s -w" \
+            -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_v2ray_api,with_tailscale" \
+            -o "${GITHUB_WORKSPACE}/dist-singbox/sing-box-v1.13.14-v2ray-linux-${{ matrix.goarch }}" \
+            ./cmd/sing-box
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-v1.13.14-v2ray-linux-${{ matrix.goarch }}
+          path: dist-singbox/*
 
   docker-images:
     needs: quality-gates
@@ -155,7 +190,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/aethergate-agent:${{ github.sha }}
 
   release:
-    needs: [build-binaries, docker-images]
+    needs: [build-binaries, build-singbox, docker-images]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

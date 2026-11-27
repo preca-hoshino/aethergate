@@ -275,21 +275,64 @@ pub fn compile_singbox_config(
     }))
 }
 
+/// Returns the default DNS server tag (`"dns-bootstrap"` when a custom `dns_server` is configured, else `"dns-local"`).
+fn default_dns_tag(dns_route: &DnsRouteProfile) -> &'static str {
+    if dns_route
+        .dns_server
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        "dns-bootstrap"
+    } else {
+        "dns-local"
+    }
+}
+
+/// Splits an authority string (`host`, `host:port`, `[ipv6]`, or `[ipv6]:port`) into `(host, port)`.
+fn split_authority_host_port(authority: &str) -> (&str, Option<u16>) {
+    if let Some(rest) = authority.strip_prefix('[')
+        && let Some((ipv6, after_bracket)) = rest.split_once(']')
+    {
+        let port = after_bracket
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok());
+        return (ipv6, port);
+    }
+    if let Some((host, port_raw)) = authority.rsplit_once(':')
+        && !host.contains(':')
+        && let Ok(port) = port_raw.parse::<u16>()
+    {
+        return (host, Some(port));
+    }
+    (authority, None)
+}
+
 /// Compiles the `dns` block using [`DnsRouteProfile`].
 fn compile_dns_block(dns_route: &DnsRouteProfile) -> Value {
     let mut bootstrap = serde_json::Map::new();
     bootstrap.insert("tag".to_string(), json!("dns-bootstrap"));
     let server = dns_route.dns_server.as_deref().unwrap_or("1.1.1.1").trim();
-    if let Some(host_port) = server.strip_prefix("https://") {
-        let host = host_port
-            .split('/')
-            .next()
-            .unwrap_or("223.5.5.5")
-            .split(':')
-            .next()
-            .unwrap_or("223.5.5.5");
+
+    let host_for_ip_check = if let Some(host_port_path) = server.strip_prefix("https://") {
+        let (authority, path_rest) = match host_port_path.split_once('/') {
+            Some((a, p)) if !p.is_empty() => (a, Some(format!("/{p}"))),
+            Some((a, _)) => (a, None),
+            None => (host_port_path, None),
+        };
+        let (parsed_host, port) = split_authority_host_port(authority);
+        let host = if parsed_host.is_empty() {
+            "223.5.5.5"
+        } else {
+            parsed_host
+        };
         bootstrap.insert("type".to_string(), json!("https"));
         bootstrap.insert("server".to_string(), json!(host));
+        if let Some(port) = port {
+            bootstrap.insert("server_port".to_string(), json!(port));
+        }
+        if let Some(path) = path_rest {
+            bootstrap.insert("path".to_string(), json!(path));
+        }
         if let Some(sni) = dns_route
             .dns_server_name
             .as_deref()
@@ -300,9 +343,20 @@ fn compile_dns_block(dns_route: &DnsRouteProfile) -> Value {
                 json!({ "enabled": true, "server_name": sni }),
             );
         }
-    } else if let Some(host) = server.strip_prefix("tls://") {
+        host
+    } else if let Some(host_port) = server.strip_prefix("tls://") {
+        let (authority, _) = host_port.split_once('/').unwrap_or((host_port, ""));
+        let (parsed_host, port) = split_authority_host_port(authority);
+        let host = if parsed_host.is_empty() {
+            "223.5.5.5"
+        } else {
+            parsed_host
+        };
         bootstrap.insert("type".to_string(), json!("tls"));
         bootstrap.insert("server".to_string(), json!(host));
+        if let Some(port) = port {
+            bootstrap.insert("server_port".to_string(), json!(port));
+        }
         if let Some(sni) = dns_route
             .dns_server_name
             .as_deref()
@@ -313,9 +367,25 @@ fn compile_dns_block(dns_route: &DnsRouteProfile) -> Value {
                 json!({ "enabled": true, "server_name": sni }),
             );
         }
+        host
     } else {
+        let bare = server.strip_prefix("udp://").unwrap_or(server);
+        let (parsed_host, port) = split_authority_host_port(bare);
+        let host = if parsed_host.is_empty() {
+            "1.1.1.1"
+        } else {
+            parsed_host
+        };
         bootstrap.insert("type".to_string(), json!("udp"));
-        bootstrap.insert("server".to_string(), json!(server));
+        bootstrap.insert("server".to_string(), json!(host));
+        if let Some(port) = port {
+            bootstrap.insert("server_port".to_string(), json!(port));
+        }
+        host
+    };
+
+    if host_for_ip_check.parse::<std::net::IpAddr>().is_err() {
+        bootstrap.insert("domain_resolver".to_string(), json!("dns-local"));
     }
 
     let mut dns_obj = serde_json::Map::new();
@@ -329,7 +399,7 @@ fn compile_dns_block(dns_route: &DnsRouteProfile) -> Value {
             Value::Object(bootstrap)
         ]),
     );
-    dns_obj.insert("final".to_string(), json!("dns-local"));
+    dns_obj.insert("final".to_string(), json!(default_dns_tag(dns_route)));
     if let Some(strategy) = dns_route.dns_strategy.as_deref().filter(|s| !s.is_empty()) {
         dns_obj.insert("strategy".to_string(), json!(strategy));
     }
@@ -424,7 +494,7 @@ fn compile_route_block(dns_route: &DnsRouteProfile, inbound_rules: Vec<Value>) -
         "rules": rules,
         "final": "direct",
         "auto_detect_interface": dns_route.auto_detect_interface,
-        "default_domain_resolver": "dns-local"
+        "default_domain_resolver": default_dns_tag(dns_route)
     })
 }
 
@@ -832,5 +902,84 @@ mod tests {
         inbounds[2].listen_port = 25000;
         let res = validate_inbound_ports(&inbounds);
         assert!(matches!(res, Err(CompileError::PortConflict { .. })));
+    }
+
+    #[test]
+    fn compiles_custom_doh_and_multi_outbound_with_per_inbound_users() {
+        let mut inbounds = sample_inbounds();
+        inbounds[0].outbound_tag = Some("direct-campus".to_string());
+        inbounds[0].allowed_usernames = Some(vec!["u_alice01".to_string()]);
+        inbounds[1].outbound_tag = Some("jp-hy2".to_string());
+
+        let template = NodeTemplate {
+            inbounds,
+            dns_route: json!({
+                "dns_server": "https://dns.alidns.com:443/dns-query",
+                "dns_server_name": "dns.alidns.com",
+                "dns_strategy": "prefer_ipv4",
+                "hijack_dns": true,
+                "auto_detect_interface": true,
+                "reject_private_ip": true
+            }),
+            outbounds: vec![
+                OutboundSpec::Direct {
+                    tag: "direct-campus".to_string(),
+                    bind_interface: Some("wan".to_string()),
+                    routing_mark: Some(262_144),
+                },
+                OutboundSpec::Hysteria2 {
+                    tag: "jp-hy2".to_string(),
+                    server: "arts-jp-hnd-01.proxy.restart.org.cn".to_string(),
+                    server_port: 40001,
+                    password: "relay_password".to_string(),
+                    server_name: Some("jp.example.com".to_string()),
+                    insecure: false,
+                    alpn: vec!["h3".to_string()],
+                    bind_interface: Some("wan".to_string()),
+                    routing_mark: Some(262_144),
+                },
+            ],
+        };
+        let users = vec![
+            AuthorizedUserCredential {
+                user_id: Uuid::new_v4(),
+                proxy_username: "u_alice01".to_string(),
+                proxy_uuid: Uuid::new_v4(),
+                proxy_password: "pw1".to_string(),
+            },
+            AuthorizedUserCredential {
+                user_id: Uuid::new_v4(),
+                proxy_username: "u_bob02".to_string(),
+                proxy_uuid: Uuid::new_v4(),
+                proxy_password: "pw2".to_string(),
+            },
+        ];
+
+        let cfg = compile_singbox_config(
+            &template,
+            &TlsProfile::default(),
+            &users,
+            &LocalAgentOverrides::default(),
+        );
+        assert!(cfg.is_ok());
+        if let Ok(cfg) = cfg {
+            assert_eq!(cfg["dns"]["final"], "dns-bootstrap");
+            assert_eq!(cfg["dns"]["servers"][1]["type"], "https");
+            assert_eq!(cfg["dns"]["servers"][1]["server"], "dns.alidns.com");
+            assert_eq!(cfg["dns"]["servers"][1]["server_port"], 443);
+            assert_eq!(cfg["dns"]["servers"][1]["path"], "/dns-query");
+            assert_eq!(cfg["dns"]["servers"][1]["domain_resolver"], "dns-local");
+            assert_eq!(cfg["route"]["default_domain_resolver"], "dns-bootstrap");
+            assert_eq!(cfg["outbounds"].as_array().map(Vec::len), Some(3));
+            assert_eq!(
+                cfg["inbounds"][0]["users"].as_array().map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(cfg["inbounds"][0]["users"][0]["name"], "u_alice01");
+            assert_eq!(
+                cfg["inbounds"][1]["users"].as_array().map(Vec::len),
+                Some(2)
+            );
+        }
     }
 }
