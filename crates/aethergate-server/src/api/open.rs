@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -131,7 +131,7 @@ async fn authenticate_node(
 pub async fn open_auth_verify(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<Json<NodeAuthVerifyResponse>> {
@@ -150,7 +150,7 @@ pub async fn open_auth_verify(
 pub async fn open_auth_client(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<Json<ClientAuthResponse>> {
@@ -242,7 +242,7 @@ struct DbInboundRow {
 pub async fn open_get_config(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<OpenConfigQuery>,
 ) -> AppResult<Response> {
@@ -480,7 +480,7 @@ async fn load_authorized_credentials_for_node(
 pub async fn open_get_users(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<OpenUsersQuery>,
 ) -> AppResult<Json<NodeUsersSyncResponse>> {
@@ -624,7 +624,7 @@ async fn collect_pending_actions(
 pub async fn open_report_status(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<Response> {
@@ -695,7 +695,7 @@ pub async fn open_report_status(
 pub async fn open_report_telemetry(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<Response> {
@@ -735,7 +735,7 @@ pub async fn open_report_telemetry(
 pub async fn open_sse_events(
     State(state): State<AppState>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let node = authenticate_node(&state, &method, &uri, &headers, &[]).await?;
@@ -783,7 +783,7 @@ pub async fn open_ack_command(
     State(state): State<AppState>,
     Path(command_id): Path<Uuid>,
     method: Method,
-    uri: Uri,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
