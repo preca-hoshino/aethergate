@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::header::{self, HeaderName, HeaderValue};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -607,6 +608,40 @@ pub fn render_mihomo_yaml(
     out
 }
 
+/// HTTP response header used by Clash/Mihomo/v2rayN/Shadowrocket clients to display traffic usage.
+const SUBSCRIPTION_USERINFO_HEADER: HeaderName = HeaderName::from_static("subscription-userinfo");
+
+/// Formats the `Subscription-Userinfo` header value from monthly uplink and downlink bytes.
+#[must_use]
+fn format_subscription_userinfo(uplink_bytes: i64, downlink_bytes: i64) -> String {
+    format!(
+        "upload={}; download={}; total=0; expire=0",
+        uplink_bytes.max(0),
+        downlink_bytes.max(0)
+    )
+}
+
+/// Loads the user's current calendar-month `(uplink_bytes, downlink_bytes)` from `user_monthly_traffic`.
+async fn load_user_monthly_traffic(state: &AppState, user_id: Uuid) -> AppResult<(i64, i64)> {
+    let stat_month = crate::telemetry::parse_stat_month(None, state.stats_tz)?;
+    let (uplink_bytes, downlink_bytes) = sqlx::query_as::<_, (i64, i64)>(
+        r"
+        SELECT
+            COALESCE(uplink_bytes, 0),
+            COALESCE(downlink_bytes, 0)
+        FROM user_monthly_traffic
+        WHERE stat_month = $1 AND user_id = $2
+        ",
+    )
+    .bind(stat_month)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .unwrap_or((0, 0));
+
+    Ok((uplink_bytes, downlink_bytes))
+}
+
 /// `GET /sub/{token}` - public subscription endpoint gated by `sub_token`, `panel_status`, and `proxy_enabled`.
 pub async fn get_subscription(
     State(state): State<AppState>,
@@ -634,51 +669,62 @@ pub async fn get_subscription(
     }
 
     let inbounds = load_authorized_inbounds_for_user(&state, user.id).await?;
+    let (uplink_bytes, downlink_bytes) = load_user_monthly_traffic(&state, user.id).await?;
+    let userinfo = format_subscription_userinfo(uplink_bytes, downlink_bytes);
 
-    if query.format.eq_ignore_ascii_case("mihomo") || query.format.eq_ignore_ascii_case("clash") {
-        let template = load_mihomo_template(&state).await?;
-        let yaml = render_mihomo_yaml(&inbounds, user.proxy_uuid, &user.proxy_password, &template);
-        return Ok((
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
-                (
-                    header::CONTENT_DISPOSITION,
-                    "inline; filename=\"aethergate.yaml\"",
-                ),
-            ],
-            yaml,
-        )
-            .into_response());
+    let mut response =
+        if query.format.eq_ignore_ascii_case("mihomo") || query.format.eq_ignore_ascii_case("clash")
+        {
+            let template = load_mihomo_template(&state).await?;
+            let yaml =
+                render_mihomo_yaml(&inbounds, user.proxy_uuid, &user.proxy_password, &template);
+            (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        "inline; filename=\"aethergate.yaml\"",
+                    ),
+                ],
+                yaml,
+            )
+                .into_response()
+        } else if query.format.eq_ignore_ascii_case("singbox") {
+            let outbounds: Vec<Value> = inbounds
+                .iter()
+                .filter_map(|row| render_singbox_outbound(row, user.proxy_uuid, &user.proxy_password))
+                .collect();
+            let body = serde_json::to_string_pretty(&json!({ "outbounds": outbounds }))
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("JSON serialization error: {e}")))?;
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+                body,
+            )
+                .into_response()
+        } else {
+            let uris: Vec<String> = inbounds
+                .iter()
+                .filter_map(|row| render_inbound_uri(row, user.proxy_uuid, &user.proxy_password))
+                .map(|(_, uri)| uri)
+                .collect();
+            let encoded = STANDARD.encode(uris.join("\n"));
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                encoded,
+            )
+                .into_response()
+        };
+
+    if let Ok(header_value) = HeaderValue::from_str(&userinfo) {
+        response
+            .headers_mut()
+            .insert(SUBSCRIPTION_USERINFO_HEADER, header_value);
     }
 
-    if query.format.eq_ignore_ascii_case("singbox") {
-        let outbounds: Vec<Value> = inbounds
-            .iter()
-            .filter_map(|row| render_singbox_outbound(row, user.proxy_uuid, &user.proxy_password))
-            .collect();
-        let body = serde_json::to_string_pretty(&json!({ "outbounds": outbounds }))
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("JSON serialization error: {e}")))?;
-        return Ok((
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-            body,
-        )
-            .into_response());
-    }
-
-    let uris: Vec<String> = inbounds
-        .iter()
-        .filter_map(|row| render_inbound_uri(row, user.proxy_uuid, &user.proxy_password))
-        .map(|(_, uri)| uri)
-        .collect();
-    let encoded = STANDARD.encode(uris.join("\n"));
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        encoded,
-    )
-        .into_response())
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -863,5 +909,17 @@ mod tests {
         assert!(yaml.contains("name: \"PROXY\""));
         assert!(yaml.contains("name: \"CN-CKG-01\""));
         assert!(yaml.contains("rules:"));
+    }
+
+    #[test]
+    fn formats_subscription_userinfo_header() {
+        assert_eq!(
+            format_subscription_userinfo(1_048_576, 2_097_152),
+            "upload=1048576; download=2097152; total=0; expire=0"
+        );
+        assert_eq!(
+            format_subscription_userinfo(-10, 0),
+            "upload=0; download=0; total=0; expire=0"
+        );
     }
 }
