@@ -6,7 +6,6 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { api } from '@/lib/api-client'
 import { currentStatMonth, formatBytes } from '@/lib/formatters'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '@/stores/use-app-store'
 import type { UsersMonthlyTimeSeries, UserTimeSeriesUser } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -132,8 +131,7 @@ function HourlyTrafficTooltip({ active, payload, label, userMap }: CustomTooltip
 
 export function DataBoardPage() {
   const { t, i18n } = useTranslation()
-  const month = useAppStore((s) => s.selectedMonth)
-  const setSelectedMonth = useAppStore((s) => s.setSelectedMonth)
+  const [month, setSelectedMonth] = useState<string>(() => currentStatMonth())
 
   const [metric, setMetric] = useState<MetricKind>('total')
   const [mode, setMode] = useState<AggregationMode>('hourly')

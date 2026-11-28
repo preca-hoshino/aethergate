@@ -11,13 +11,6 @@ const COLLAPSIBLE_STORAGE_KEY = 'ag-sidebar-collapsible'
 const DEFAULT_VARIANT: SidebarVariant = 'inset'
 const DEFAULT_COLLAPSIBLE: SidebarCollapsible = 'icon'
 
-function currentYearMonth(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  return `${y}-${m}`
-}
-
 function getSystemPreferredTheme(): ThemeMode {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
@@ -54,13 +47,11 @@ interface AppUiState {
   theme: ThemeMode
   sidebarVariant: SidebarVariant
   sidebarCollapsible: SidebarCollapsible
-  selectedMonth: string
   commandOpen: boolean
   setTheme: (theme: ThemeMode) => void
   setSidebarVariant: (variant: SidebarVariant) => void
   setSidebarCollapsible: (collapsible: SidebarCollapsible) => void
   resetLayout: () => void
-  setSelectedMonth: (month: string) => void
   setCommandOpen: (open: boolean) => void
 }
 
@@ -68,7 +59,6 @@ export const useAppStore = create<AppUiState>((set) => ({
   theme: parseTheme(localStorage.getItem(THEME_STORAGE_KEY)),
   sidebarVariant: parseVariant(localStorage.getItem(VARIANT_STORAGE_KEY)),
   sidebarCollapsible: parseCollapsible(localStorage.getItem(COLLAPSIBLE_STORAGE_KEY)),
-  selectedMonth: currentYearMonth(),
   commandOpen: false,
   setTheme: (theme) => {
     localStorage.setItem(THEME_STORAGE_KEY, theme)
@@ -90,9 +80,6 @@ export const useAppStore = create<AppUiState>((set) => ({
       sidebarVariant: DEFAULT_VARIANT,
       sidebarCollapsible: DEFAULT_COLLAPSIBLE,
     })
-  },
-  setSelectedMonth: (selectedMonth) => {
-    set({ selectedMonth })
   },
   setCommandOpen: (commandOpen) => {
     set({ commandOpen })

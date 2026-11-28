@@ -1,20 +1,10 @@
 import type { ReactNode } from 'react'
-import { Calendar, Check, Radio } from 'lucide-react'
+import { Radio } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '@/stores/use-app-store'
 import { useLiveMetricsStore } from '@/stores/use-live-metrics-store'
 import type { AuthUser } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LanguageSwitch } from '@/components/language-switch'
 import { AppSidebar } from '@/components/layout/app-sidebar'
@@ -30,20 +20,8 @@ interface AdminShellProps {
   children: ReactNode
 }
 
-function recentMonths(count = 6): string[] {
-  const out: string[] = []
-  const now = new Date()
-  for (let i = 0; i < count; i += 1) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
-  }
-  return out
-}
-
 export function AdminShell({ user, children }: AdminShellProps) {
   const { t } = useTranslation()
-  const selectedMonth = useAppStore((s) => s.selectedMonth)
-  const setSelectedMonth = useAppStore((s) => s.setSelectedMonth)
 
   const wsConnected = useLiveMetricsStore((s) => s.connected)
   const cadenceMode = useLiveMetricsStore((s) => s.cadenceMode)
@@ -75,30 +53,6 @@ export function AdminShell({ user, children }: AdminShellProps) {
                 </span>
               </Badge>
             )}
-
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 gap-1.5">
-                  <Calendar className="size-3.5" />
-                  <span className="font-mono text-xs">{selectedMonth}</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>{t('common.calendarMonth')}</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {recentMonths().map((m) => (
-                  <DropdownMenuItem
-                    key={m}
-                    onClick={() => {
-                      setSelectedMonth(m)
-                    }}
-                  >
-                    <span className="font-mono">{m}</span>
-                    <Check className={cn('ms-auto size-4', selectedMonth !== m && 'hidden')} />
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
 
             <LanguageSwitch />
             <ThemeSwitch />

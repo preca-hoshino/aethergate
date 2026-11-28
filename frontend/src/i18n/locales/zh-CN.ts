@@ -39,7 +39,6 @@ export const zhCN: TranslationSchema = {
     unknown: '未知',
     verifyingSession: '正在验证登录会话...',
     noDescription: '暂无描述',
-    calendarMonth: '统计月份',
     live: '实时在线',
     cadenceEco: '节能',
     cadenceRealtime: '实时',

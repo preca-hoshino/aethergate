@@ -37,7 +37,6 @@ export const en = {
     unknown: 'Unknown',
     verifyingSession: 'Verifying session...',
     noDescription: 'No description',
-    calendarMonth: 'Billing Month',
     live: 'Live',
     cadenceEco: 'Eco',
     cadenceRealtime: 'Realtime',
