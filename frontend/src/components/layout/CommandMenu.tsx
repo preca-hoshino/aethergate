@@ -2,11 +2,11 @@ import { useCallback, useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import {
   Activity,
-  BarChart3,
   Boxes,
   FileText,
   Languages,
   LayoutDashboard,
+  LineChart,
   Moon,
   Server,
   Settings,
@@ -67,7 +67,7 @@ export function CommandMenu({ role = 'admin' }: CommandMenuProps) {
           { label: t('command.items.nodes'), to: '/nodes', icon: Server },
           { label: t('command.items.nodeGroups'), to: '/node-groups', icon: Boxes },
           { label: t('command.items.users'), to: '/users', icon: Users },
-          { label: t('command.items.analytics'), to: '/analytics', icon: BarChart3 },
+          { label: t('command.items.dataBoard'), to: '/data-board', icon: LineChart },
           { label: t('command.items.auditLogs'), to: '/audit-logs', icon: FileText },
           { label: t('command.items.settings'), to: '/settings', icon: Settings },
           { label: t('command.items.portal'), to: '/portal', icon: Activity },

@@ -1,8 +1,8 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import { NotFoundView, RootLayout } from '@/components/layout/RootLayout'
-import { AnalyticsPage } from '@/pages/AnalyticsPage'
 import { AuditLogsPage } from '@/pages/AuditLogsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { DataBoardPage } from '@/pages/DataBoardPage'
 import { NodeDetailPage } from '@/pages/NodeDetailPage'
 import { NodeGroupsPage } from '@/pages/NodeGroupsPage'
 import { NodesPage } from '@/pages/NodesPage'
@@ -49,10 +49,10 @@ const usersRoute = createRoute({
   component: UsersPage,
 })
 
-const analyticsRoute = createRoute({
+const dataBoardRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/analytics',
-  component: AnalyticsPage,
+  path: '/data-board',
+  component: DataBoardPage,
 })
 
 const auditLogsRoute = createRoute({
@@ -80,7 +80,7 @@ const routeTree = rootRoute.addChildren([
   nodeDetailRoute,
   nodeGroupsRoute,
   usersRoute,
-  analyticsRoute,
+  dataBoardRoute,
   auditLogsRoute,
   settingsRoute,
   portalRoute,

@@ -1,10 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import {
   Activity,
-  BarChart3,
   Boxes,
   FileText,
   LayoutDashboard,
+  LineChart,
   Server,
   Settings,
   Shield,
@@ -42,7 +42,7 @@ export function AppSidebar({ user }: AppSidebarProps) {
     { title: t('nav.nodes'), to: '/nodes', icon: Server },
     { title: t('nav.nodeGroups'), to: '/node-groups', icon: Boxes },
     { title: t('nav.users'), to: '/users', icon: Users },
-    { title: t('nav.analytics'), to: '/analytics', icon: BarChart3 },
+    { title: t('nav.dataBoard'), to: '/data-board', icon: LineChart },
   ]
 
   const managementItems: ReadonlyArray<NavItemConfig> = [

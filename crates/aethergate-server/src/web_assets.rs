@@ -18,7 +18,7 @@ const SPA_ROUTE_PREFIXES: &[&str] = &[
     "nodes",
     "node-groups",
     "users",
-    "analytics",
+    "data-board",
     "audit-logs",
     "settings",
     "portal",
@@ -119,7 +119,8 @@ mod tests {
     fn spa_whitelist_rejects_scanner_probes() {
         assert!(is_allowed_spa_route(""));
         assert!(is_allowed_spa_route("/nodes/123"));
-        assert!(is_allowed_spa_route("analytics"));
+        assert!(is_allowed_spa_route("data-board"));
+        assert!(!is_allowed_spa_route("analytics"));
         assert!(is_allowed_spa_route("sign-in"));
         assert!(!is_allowed_spa_route("wp-login.php"));
         assert!(!is_allowed_spa_route(".env"));
