@@ -94,6 +94,10 @@ pub fn build_router(state: AppState) -> Router {
             "/analytics/timeseries",
             get(panel::get_analytics_timeseries),
         )
+        .route(
+            "/analytics/users-timeseries",
+            get(panel::get_analytics_users_timeseries),
+        )
         .route("/audit-logs", get(panel::list_audit_logs))
         .route("/portal/summary", get(panel::get_portal_summary))
         .route(

@@ -25,7 +25,7 @@ use crate::state::AppState;
 use crate::subscription::{
     RenderedSubscriptionLink, load_authorized_inbounds_for_user, render_inbound_uri,
 };
-use crate::telemetry::parse_stat_month;
+use crate::telemetry::{month_utc_bounds, parse_stat_month};
 
 /// Common `?month=YYYY-MM` query parameter for monthly statistics endpoints.
 #[derive(Debug, Deserialize)]
@@ -2027,6 +2027,106 @@ pub async fn get_analytics_timeseries(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(rows))
+}
+
+/// User metadata and monthly totals for `GET /api/v1/analytics/users-timeseries`.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct UserTimeSeriesUserDto {
+    /// User UUID.
+    pub user_id: Uuid,
+    /// Display name.
+    pub display_name: String,
+    /// Immutable proxy username.
+    pub proxy_username: String,
+    /// Total monthly uplink bytes.
+    pub total_uplink_bytes: i64,
+    /// Total monthly downlink bytes.
+    pub total_downlink_bytes: i64,
+}
+
+/// Per-user hourly traffic bucket for `GET /api/v1/analytics/users-timeseries`.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct UserTimeSeriesPointDto {
+    /// Bucket timestamp (UTC, truncated to hour).
+    pub bucket: DateTime<Utc>,
+    /// User UUID.
+    pub user_id: Uuid,
+    /// Uplink bytes during this hour.
+    pub uplink_bytes: i64,
+    /// Downlink bytes during this hour.
+    pub downlink_bytes: i64,
+}
+
+/// Monthly hourly per-user traffic response for `GET /api/v1/analytics/users-timeseries`.
+#[derive(Debug, Serialize)]
+pub struct UsersMonthlyTimeSeriesDto {
+    /// Target calendar month (`YYYY-MM-01`).
+    pub stat_month: NaiveDate,
+    /// Inclusive UTC start of the calendar month in `[stats].timezone`.
+    pub start_at: DateTime<Utc>,
+    /// Exclusive UTC end of the calendar month in `[stats].timezone`.
+    pub end_at: DateTime<Utc>,
+    /// End-user accounts ordered by monthly total traffic descending.
+    pub users: Vec<UserTimeSeriesUserDto>,
+    /// Sparse hourly per-user traffic buckets within `[start_at, end_at)`.
+    pub points: Vec<UserTimeSeriesPointDto>,
+}
+
+/// `GET /api/v1/analytics/users-timeseries`
+pub async fn get_analytics_users_timeseries(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Query(query): Query<MonthQuery>,
+) -> AppResult<Json<UsersMonthlyTimeSeriesDto>> {
+    let stat_month = parse_stat_month(query.month.as_deref(), state.stats_tz)?;
+    let (start_at, end_at) = month_utc_bounds(stat_month, state.stats_tz);
+
+    let users = sqlx::query_as::<_, UserTimeSeriesUserDto>(
+        r"
+        SELECT
+            u.id AS user_id,
+            u.display_name,
+            u.proxy_username,
+            COALESCE(t.uplink_bytes, 0)::bigint AS total_uplink_bytes,
+            COALESCE(t.downlink_bytes, 0)::bigint AS total_downlink_bytes
+        FROM users u
+        LEFT JOIN user_monthly_traffic t ON t.user_id = u.id AND t.stat_month = $1
+        WHERE u.account_type = 'user'
+        ORDER BY (COALESCE(t.uplink_bytes, 0) + COALESCE(t.downlink_bytes, 0)) DESC, u.display_name ASC
+        ",
+    )
+    .bind(stat_month)
+    .fetch_all(&state.db)
+    .await?;
+
+    let points = sqlx::query_as::<_, UserTimeSeriesPointDto>(
+        r"
+        SELECT
+            date_trunc('hour', r.time) AS bucket,
+            r.user_id,
+            COALESCE(SUM(r.uplink_bytes), 0)::bigint AS uplink_bytes,
+            COALESCE(SUM(r.downlink_bytes), 0)::bigint AS downlink_bytes
+        FROM traffic_samples_raw r
+        JOIN users u ON u.id = r.user_id
+        WHERE r.time >= $1
+          AND r.time < $2
+          AND u.account_type = 'user'
+        GROUP BY bucket, r.user_id
+        ORDER BY bucket ASC, r.user_id ASC
+        ",
+    )
+    .bind(start_at)
+    .bind(end_at)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(UsersMonthlyTimeSeriesDto {
+        stat_month,
+        start_at,
+        end_at,
+        users,
+        points,
+    }))
 }
 
 /// Audit log row DTO.
