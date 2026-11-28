@@ -48,7 +48,7 @@ jobs:
           INPUT_TAG: ${{ inputs.release_tag }}
           INPUT_NODE: ${{ inputs.target_node }}
           INPUT_FORCE: ${{ inputs.force }}
-          AGENT_NODES_JSON: ${{ secrets.AGENT_NODES_JSON }}
+          AGENT_NODES_JSON: ${{ vars.AGENT_NODES_JSON }}
         run: |
           set -euo pipefail
 
@@ -88,7 +88,7 @@ jobs:
           fi
 
           if [ -z "${AGENT_NODES_JSON}" ]; then
-            echo "AGENT_NODES_JSON secret is empty; skipping agent deploy."
+            echo "AGENT_NODES_JSON variable is empty; skipping agent deploy."
             SHOULD_DEPLOY="false"
             MATRIX="[]"
           elif [ -n "${INPUT_NODE}" ]; then
@@ -101,14 +101,20 @@ jobs:
             MATRIX=$(printf '%s' "${AGENT_NODES_JSON}" | jq -c '.')
           fi
 
-          echo "should_deploy=${SHOULD_DEPLOY}" >> "$GITHUB_OUTPUT"
-          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "should_deploy=${SHOULD_DEPLOY}, release_tag=${TAG}, matrix_count=$(printf '%s' "${MATRIX}" | jq 'length')"
+          if [ "${SHOULD_DEPLOY}" != "true" ] || [ "${MATRIX}" = "[]" ]; then
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            echo "matrix=[{\"name\":\"skip\"}]" >> "$GITHUB_OUTPUT"
+            echo "should_deploy=false, release_tag=${TAG}, matrix_count=0"
+          else
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+            echo "should_deploy=true, release_tag=${TAG}, matrix_count=$(printf '%s' "${MATRIX}" | jq 'length')"
+          fi
 
   deploy:
     name: Deploy Agent (${{ matrix.node.name }})
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_deploy == 'true' && needs.prepare.outputs.matrix != '[]' }}
+    if: ${{ needs.prepare.outputs.should_deploy == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -139,52 +145,52 @@ jobs:
           set -euo pipefail
 
           install -m 700 -d ~/.ssh
-          jq -r --arg name "${NODE_NAME}" '.[$name] // empty' <<< "${AGENT_SSH_KEYS_JSON}" > ~/.ssh/node_key
+          printf '%s\n' "${AGENT_SSH_KEYS_JSON}" | jq -r --arg name "${NODE_NAME}" '.[$name] // empty' > ~/.ssh/node_key
           if [ ! -s ~/.ssh/node_key ]; then
             echo "Missing SSH private key for node '${NODE_NAME}' in AGENT_SSH_KEYS_JSON" >&2
             exit 1
           fi
           chmod 600 ~/.ssh/node_key
 
-          cat > ~/.ssh/config << EOF
-          Host target
-            HostName ${NODE_HOST}
-            Port ${NODE_PORT}
-            User ${NODE_USER}
-            IdentityFile ~/.ssh/node_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            ServerAliveInterval 15
-            ServerAliveCountMax 6
-            ConnectTimeout 15
-          EOF
+          {
+            echo "Host target"
+            echo "  HostName ${NODE_HOST}"
+            echo "  Port ${NODE_PORT}"
+            echo "  User ${NODE_USER}"
+            echo "  IdentityFile ~/.ssh/node_key"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking no"
+            echo "  UserKnownHostsFile /dev/null"
+            echo "  ServerAliveInterval 15"
+            echo "  ServerAliveCountMax 6"
+            echo "  ConnectTimeout 15"
+          } > ~/.ssh/config
 
           if [ "${NODE_SSH_RSA}" = "true" ]; then
-            cat >> ~/.ssh/config << 'EOF'
-            HostKeyAlgorithms +ssh-rsa
-            PubkeyAcceptedAlgorithms +ssh-rsa
-          EOF
+            {
+              echo "  HostKeyAlgorithms +ssh-rsa"
+              echo "  PubkeyAcceptedAlgorithms +ssh-rsa"
+            } >> ~/.ssh/config
           fi
 
           if [ "${NODE_JUMP}" = "true" ]; then
             printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/jump_key
             chmod 600 ~/.ssh/jump_key
-            cat >> ~/.ssh/config << EOF
-            ProxyJump jump
-
-          Host jump
-            HostName ${DEPLOY_HOST}
-            Port ${DEPLOY_PORT}
-            User ${DEPLOY_USER}
-            IdentityFile ~/.ssh/jump_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            ServerAliveInterval 15
-            ServerAliveCountMax 6
-            ConnectTimeout 15
-          EOF
+            {
+              echo "  ProxyJump jump"
+              echo ""
+              echo "Host jump"
+              echo "  HostName ${DEPLOY_HOST}"
+              echo "  Port ${DEPLOY_PORT}"
+              echo "  User ${DEPLOY_USER}"
+              echo "  IdentityFile ~/.ssh/jump_key"
+              echo "  IdentitiesOnly yes"
+              echo "  StrictHostKeyChecking no"
+              echo "  UserKnownHostsFile /dev/null"
+              echo "  ServerAliveInterval 15"
+              echo "  ServerAliveCountMax 6"
+              echo "  ConnectTimeout 15"
+            } >> ~/.ssh/config
           fi
           chmod 600 ~/.ssh/config
 
