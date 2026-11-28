@@ -63,7 +63,6 @@ export const en = {
     toggleAria: 'Toggle theme',
     light: 'Light',
     dark: 'Dark',
-    system: 'System',
   },
   language: {
     label: 'Language',
@@ -454,7 +453,7 @@ export const en = {
       languageLabel: 'Display Language',
       languageDesc: 'Choose the display language for the interface and date formats.',
       themeLabel: 'Theme Mode',
-      themeDesc: 'Select Light, Dark, or follow your operating system preference.',
+      themeDesc: 'Choose between Light or Dark mode.',
       sidebarVariantLabel: 'Sidebar Style',
       sidebarVariantDesc: 'Choose between Inset, Floating, or Classic Sidebar.',
       variants: {

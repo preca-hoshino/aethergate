@@ -20,16 +20,6 @@ export function App() {
 
   useEffect(() => {
     applyThemeToDom(theme)
-    if (theme !== 'system') return undefined
-
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => {
-      applyThemeToDom('system')
-    }
-    mediaQuery.addEventListener('change', onChange)
-    return () => {
-      mediaQuery.removeEventListener('change', onChange)
-    }
   }, [theme])
 
   return (

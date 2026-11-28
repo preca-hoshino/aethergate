@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type ThemeMode = 'light' | 'dark' | 'system'
+export type ThemeMode = 'light' | 'dark'
 export type SidebarVariant = 'inset' | 'sidebar' | 'floating'
 export type SidebarCollapsible = 'icon' | 'offcanvas'
 
@@ -8,7 +8,6 @@ const THEME_STORAGE_KEY = 'ag-theme'
 const VARIANT_STORAGE_KEY = 'ag-sidebar-variant'
 const COLLAPSIBLE_STORAGE_KEY = 'ag-sidebar-collapsible'
 
-const DEFAULT_THEME: ThemeMode = 'system'
 const DEFAULT_VARIANT: SidebarVariant = 'inset'
 const DEFAULT_COLLAPSIBLE: SidebarCollapsible = 'icon'
 
@@ -19,9 +18,13 @@ function currentYearMonth(): string {
   return `${y}-${m}`
 }
 
+function getSystemPreferredTheme(): ThemeMode {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
 function parseTheme(raw: string | null): ThemeMode {
-  if (raw === 'light' || raw === 'dark' || raw === 'system') return raw
-  return DEFAULT_THEME
+  if (raw === 'light' || raw === 'dark') return raw
+  return getSystemPreferredTheme()
 }
 
 function parseVariant(raw: string | null): SidebarVariant {
@@ -34,15 +37,9 @@ function parseCollapsible(raw: string | null): SidebarCollapsible {
   return DEFAULT_COLLAPSIBLE
 }
 
-export function resolveEffectiveTheme(mode: ThemeMode): 'light' | 'dark' {
-  if (mode === 'light' || mode === 'dark') return mode
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
-
 export function applyThemeToDom(mode: ThemeMode): void {
   const root = document.documentElement
-  const resolved = resolveEffectiveTheme(mode)
-  const isDark = resolved === 'dark'
+  const isDark = mode === 'dark'
   root.classList.toggle('dark', isDark)
   root.classList.toggle('light', !isDark)
 

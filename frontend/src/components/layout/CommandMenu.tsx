@@ -6,7 +6,6 @@ import {
   Boxes,
   FileText,
   Languages,
-  Laptop,
   LayoutDashboard,
   Moon,
   Server,
@@ -128,16 +127,6 @@ export function CommandMenu({ role = 'admin' }: CommandMenuProps) {
             >
               <Moon />
               <span>{t('theme.dark')}</span>
-            </CommandItem>
-            <CommandItem
-              onSelect={() => {
-                runCommand(() => {
-                  setTheme('system')
-                })
-              }}
-            >
-              <Laptop />
-              <span>{t('theme.system')}</span>
             </CommandItem>
           </CommandGroup>
 

@@ -65,7 +65,6 @@ export const zhCN: TranslationSchema = {
     toggleAria: '切换外观主题',
     light: '浅色模式',
     dark: '深色模式',
-    system: '跟随系统',
   },
   language: {
     label: '界面语言',
@@ -456,7 +455,7 @@ export const zhCN: TranslationSchema = {
       languageLabel: '界面显示语言',
       languageDesc: '设置控制台菜单、提示信息与时间格式所使用的语言。',
       themeLabel: '颜色主题模式',
-      themeDesc: '选择浅色、深色模式或自动跟随系统主题。',
+      themeDesc: '选择浅色或深色模式。',
       sidebarVariantLabel: '侧边栏形态',
       sidebarVariantDesc: '支持内嵌卡片 (Inset)、浮动面板 (Floating) 或经典直边 (Sidebar)。',
       variants: {

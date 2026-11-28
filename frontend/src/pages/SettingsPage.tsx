@@ -273,7 +273,6 @@ export function SettingsPage() {
                     <SelectContent>
                       <SelectItem value="light">{t('theme.light')}</SelectItem>
                       <SelectItem value="dark">{t('theme.dark')}</SelectItem>
-                      <SelectItem value="system">{t('theme.system')}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
