@@ -169,7 +169,7 @@ jobs:
           if-no-files-found: error
 
   build-singbox:
-    name: Build sing-box v1.13.14 (${{ matrix.goarch }})
+    name: Build sing-box v1.14.6 (${{ matrix.goarch }})
     needs: quality-gates
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -179,19 +179,19 @@ jobs:
         include:
           - goarch: amd64
             name: singbox-linux-x64
-            bin: sing-box-v1.13.14-v2ray-linux-amd64
+            bin: sing-box-v1.14.6-v2ray-linux-amd64
           - goarch: arm64
             name: singbox-linux-arm64
-            bin: sing-box-v1.13.14-v2ray-linux-arm64
+            bin: sing-box-v1.14.6-v2ray-linux-arm64
     steps:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.26"
 
       - name: Build sing-box with with_v2ray_api
         run: |
-          git clone --depth 1 --branch v1.13.14 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+          git clone --depth 1 --branch v1.14.6 https://github.com/SagerNet/sing-box.git /tmp/sing-box
           cd /tmp/sing-box
           mkdir -p "${GITHUB_WORKSPACE}/dist-singbox"
           CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}" go build \
@@ -363,8 +363,8 @@ jobs:
           - **Server macOS ARM64**: \`aethergate-server-macos-arm64\`
           - **Agent Linux x64 (musl)**: \`aethergate-agent-linux-x64\`
           - **Agent Linux ARM64 (musl)**: \`aethergate-agent-linux-arm64\`
-          - **sing-box v1.13.14 (with_v2ray_api) x64**: \`sing-box-v1.13.14-v2ray-linux-amd64\`
-          - **sing-box v1.13.14 (with_v2ray_api) ARM64**: \`sing-box-v1.13.14-v2ray-linux-arm64\`
+          - **sing-box v1.14.6 (with_v2ray_api) x64**: \`sing-box-v1.14.6-v2ray-linux-amd64\`
+          - **sing-box v1.14.6 (with_v2ray_api) ARM64**: \`sing-box-v1.14.6-v2ray-linux-arm64\`
 
           #### Docker 多架构镜像 (amd64 / arm64)
           - **Server**: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aethergate-server:${RELEASE_TAG}\`

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS singbox-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS singbox-builder
 ARG TARGETARCH
-ARG SINGBOX_VERSION=v1.13.14
+ARG SINGBOX_VERSION=v1.14.6
 WORKDIR /src
 RUN git clone --depth 1 --branch ${SINGBOX_VERSION} https://github.com/SagerNet/sing-box.git sing-box
 WORKDIR /src/sing-box
