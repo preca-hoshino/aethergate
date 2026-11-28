@@ -5,8 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
-import { formatBps, formatBytes } from '@/lib/formatters'
-import { useAppStore } from '@/stores/use-app-store'
+import { currentStatMonth, formatBps, formatBytes } from '@/lib/formatters'
 import type { PortalSubscriptionLink, PortalSummary } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,7 +16,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export function PortalPage() {
   const { t } = useTranslation()
-  const month = useAppStore((s) => s.selectedMonth)
+  const month = currentStatMonth()
   const [subFormat, setSubFormat] = useState<'mihomo' | 'singbox' | 'uri'>('mihomo')
 
   const { data: summary, isLoading } = useQuery({

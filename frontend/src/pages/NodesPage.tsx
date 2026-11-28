@@ -6,8 +6,7 @@ import { KeyRound, Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
-import { formatBytes } from '@/lib/formatters'
-import { useAppStore } from '@/stores/use-app-store'
+import { currentStatMonth, formatBytes } from '@/lib/formatters'
 import { useLiveMetricsStore } from '@/stores/use-live-metrics-store'
 import type { NodeDetail, NodeSummary } from '@/types/api'
 import { AgentConfigSnippet } from '@/components/agent-config-snippet'
@@ -35,7 +34,7 @@ interface BootstrapResult {
 
 export function NodesPage() {
   const { t } = useTranslation()
-  const month = useAppStore((s) => s.selectedMonth)
+  const month = currentStatMonth()
   const liveNodes = useLiveMetricsStore((s) => s.nodes)
   const queryClient = useQueryClient()
 

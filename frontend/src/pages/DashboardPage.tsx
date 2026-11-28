@@ -3,9 +3,8 @@ import { Activity, ArrowDownToLine, ArrowUpFromLine, Server, Users } from 'lucid
 import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '@/lib/api-client'
-import { formatBytes, formatTimeShort } from '@/lib/formatters'
+import { currentStatMonth, formatBytes, formatTimeShort } from '@/lib/formatters'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '@/stores/use-app-store'
 import { useLiveMetricsStore } from '@/stores/use-live-metrics-store'
 import type { AnalyticsOverview, TimeSeriesBucket, UserMonthlyTraffic } from '@/types/api'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -14,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 
 export function DashboardPage() {
   const { t, i18n } = useTranslation()
-  const month = useAppStore((s) => s.selectedMonth)
+  const month = currentStatMonth()
   const liveNodes = useLiveMetricsStore((s) => s.nodes)
 
   const { data: overview, isLoading: overviewLoading } = useQuery({

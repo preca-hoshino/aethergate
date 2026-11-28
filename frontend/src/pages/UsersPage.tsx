@@ -5,8 +5,7 @@ import { Ban, CheckCircle2, Copy, KeyRound, Plus, ShieldCheck, UserX } from 'luc
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/lib/api-client'
-import { formatBytes } from '@/lib/formatters'
-import { useAppStore } from '@/stores/use-app-store'
+import { currentStatMonth, formatBytes } from '@/lib/formatters'
 import type { NodeGroup, NodeSummary, UserDetail, UserSummary } from '@/types/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTable, DataTableColumnHeader, type DataTableFilterConfig } from '@/components/data-table'
@@ -36,7 +35,7 @@ interface CreatedUserResult {
 
 export function UsersPage() {
   const { t } = useTranslation()
-  const month = useAppStore((s) => s.selectedMonth)
+  const month = currentStatMonth()
   const queryClient = useQueryClient()
 
   const [grantUserId, setGrantUserId] = useState<string | null>(null)
