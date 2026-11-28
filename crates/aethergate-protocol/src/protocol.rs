@@ -57,6 +57,12 @@ pub struct Hy2ObfsConfig {
     pub obfs_type: String,
     /// Shared obfuscation password.
     pub password: String,
+    /// Minimum on-wire packet size in bytes (`gecko` only, `sing-box` >= 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_packet_size: Option<u16>,
+    /// Maximum on-wire packet size in bytes (`gecko` only, `sing-box` >= 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_packet_size: Option<u16>,
 }
 
 /// Protocol-specific configuration parameters stored in `node_inbounds.protocol_config`.

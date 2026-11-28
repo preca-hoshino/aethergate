@@ -617,6 +617,109 @@ export function NodeDetailPage() {
                       </div>
                     </div>
                   )}
+
+                  {ib.protocol === 'hysteria2' && (() => {
+                    const obfs = (
+                      typeof ib.protocol_config.obfs === 'object' && ib.protocol_config.obfs !== null
+                        ? ib.protocol_config.obfs
+                        : null
+                    ) as {
+                      type?: string
+                      password?: string
+                      min_packet_size?: number
+                      max_packet_size?: number
+                    } | null
+                    const obfsType = typeof obfs?.type === 'string' && obfs.type ? obfs.type : 'none'
+                    const updateObfs = (next: Record<string, unknown> | null) => {
+                      setInbounds((prev) =>
+                        prev.map((x, i) =>
+                          i === idx
+                            ? { ...x, protocol_config: { ...x.protocol_config, obfs: next } }
+                            : x,
+                        ),
+                      )
+                    }
+                    return (
+                      <div className="grid gap-3 sm:grid-cols-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Obfs Type</Label>
+                          <Select
+                            value={obfsType}
+                            onValueChange={(v) => {
+                              if (v === 'none') {
+                                updateObfs(null)
+                              } else {
+                                updateObfs({
+                                  type: v,
+                                  password: obfs?.password ?? '',
+                                  ...(v === 'gecko'
+                                    ? {
+                                        min_packet_size: obfs?.min_packet_size ?? 512,
+                                        max_packet_size: obfs?.max_packet_size ?? 1200,
+                                      }
+                                    : {}),
+                                })
+                              }
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">none</SelectItem>
+                              <SelectItem value="salamander">salamander</SelectItem>
+                              <SelectItem value="gecko">gecko (sing-box 1.14+)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {obfsType !== 'none' && (
+                          <div className="space-y-1">
+                            <Label className="text-xs">Obfs Password</Label>
+                            <Input
+                              value={obfs?.password ?? ''}
+                              onChange={(e) => {
+                                updateObfs({ ...(obfs ?? {}), type: obfsType, password: e.target.value })
+                              }}
+                            />
+                          </div>
+                        )}
+                        {obfsType === 'gecko' && (
+                          <>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Min Packet Size</Label>
+                              <Input
+                                type="number"
+                                value={obfs?.min_packet_size ?? 512}
+                                onChange={(e) => {
+                                  updateObfs({
+                                    ...(obfs ?? {}),
+                                    type: 'gecko',
+                                    password: obfs?.password ?? '',
+                                    min_packet_size: Number(e.target.value) || 512,
+                                  })
+                                }}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Max Packet Size</Label>
+                              <Input
+                                type="number"
+                                value={obfs?.max_packet_size ?? 1200}
+                                onChange={(e) => {
+                                  updateObfs({
+                                    ...(obfs ?? {}),
+                                    type: 'gecko',
+                                    password: obfs?.password ?? '',
+                                    max_packet_size: Number(e.target.value) || 1200,
+                                  })
+                                }}
+                              />
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
               ))}
 

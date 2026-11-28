@@ -688,6 +688,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn renders_all_four_protocol_uris() {
         let tls = json!({
             "mode": "self_signed",
@@ -707,7 +708,6 @@ mod tests {
             protocol_config_json: serde_json::to_value(cfg).unwrap_or(Value::Null),
         };
         let uid = Uuid::nil();
-
         let vless = render_inbound_uri(
             &base_row(
                 "in-vless",
@@ -729,7 +729,6 @@ mod tests {
             "pw",
         );
         assert!(vless.as_ref().is_some_and(|(p, u)| *p == ProtocolType::VlessReality && u.starts_with("vless://")));
-
         let hy2 = render_inbound_uri(
             &base_row(
                 "in-hy2",
@@ -741,6 +740,8 @@ mod tests {
                     obfs: Some(Hy2ObfsConfig {
                         obfs_type: "salamander".to_owned(),
                         password: "obfs".to_owned(),
+                        min_packet_size: None,
+                        max_packet_size: None,
                     }),
                     masquerade: None,
                     alpn: vec!["h3".to_owned()],
