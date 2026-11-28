@@ -12,7 +12,7 @@ use axum::http::header::{self, HeaderName, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::{Datelike, NaiveDate, TimeZone};
+use chrono::NaiveDate;
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -622,16 +622,9 @@ const DEFAULT_VIRTUAL_TOTAL_BYTES: i64 = 1024 * 1024 * 1024 * 1024;
 
 /// Computes the Unix timestamp (seconds) of the start of the next calendar month in `tz`.
 fn next_month_timestamp(stat_month: NaiveDate, tz: Tz) -> i64 {
-    let (year, month) = if stat_month.month() == 12 {
-        (stat_month.year() + 1, 1)
-    } else {
-        (stat_month.year(), stat_month.month() + 1)
-    };
-
-    NaiveDate::from_ymd_opt(year, month, 1)
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .and_then(|dt| tz.from_local_datetime(&dt).single())
-        .map_or(0, |dt| dt.timestamp())
+    crate::telemetry::month_utc_bounds(stat_month, tz)
+        .1
+        .timestamp()
 }
 
 /// Formats the `Subscription-Userinfo` header value from monthly uplink, downlink bytes and expiration timestamp.
@@ -782,7 +775,7 @@ pub async fn get_subscription(
 #[cfg(test)]
 mod tests {
     use aethergate_protocol::Hy2ObfsConfig;
-    use chrono::Timelike;
+    use chrono::{Datelike, TimeZone, Timelike};
 
     use super::*;
 

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -37,6 +37,28 @@ pub fn parse_stat_month(month_param: Option<&str>, tz: Tz) -> AppResult<NaiveDat
     NaiveDate::parse_from_str(&full, "%Y-%m-%d").map_err(|_| {
         AppError::BadRequest("month parameter must be formatted as YYYY-MM".to_owned())
     })
+}
+
+/// Computes `[start_utc, end_utc)` boundaries for a calendar month `stat_month` in `tz`.
+#[must_use]
+pub fn month_utc_bounds(stat_month: NaiveDate, tz: Tz) -> (DateTime<Utc>, DateTime<Utc>) {
+    let (next_year, next_month) = if stat_month.month() == 12 {
+        (stat_month.year() + 1, 1)
+    } else {
+        (stat_month.year(), stat_month.month() + 1)
+    };
+
+    let start_utc = stat_month
+        .and_hms_opt(0, 0, 0)
+        .and_then(|dt| tz.from_local_datetime(&dt).earliest())
+        .map_or_else(Utc::now, |dt| dt.with_timezone(&Utc));
+
+    let end_utc = NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .and_then(|dt| tz.from_local_datetime(&dt).earliest())
+        .map_or(start_utc, |dt| dt.with_timezone(&Utc));
+
+    (start_utc, end_utc)
 }
 
 /// Ingests an idempotent telemetry batch inside a single PostgreSQL transaction.
@@ -369,8 +391,6 @@ async fn upsert_inbound_monthly_and_raw(
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
-
     use super::*;
 
     #[test]
@@ -392,5 +412,22 @@ mod tests {
         assert!(ok.is_ok());
         let bad = parse_stat_month(Some("2026/11"), chrono_tz::UTC);
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn month_utc_bounds_handles_timezone_and_year_rollover() {
+        let Some(nov) = NaiveDate::from_ymd_opt(2026, 11, 1) else {
+            return;
+        };
+        let (start, end) = month_utc_bounds(nov, chrono_tz::Asia::Shanghai);
+        assert_eq!(start.to_rfc3339(), "2026-10-31T16:00:00+00:00");
+        assert_eq!(end.to_rfc3339(), "2026-11-30T16:00:00+00:00");
+
+        let Some(dec) = NaiveDate::from_ymd_opt(2026, 12, 1) else {
+            return;
+        };
+        let (dec_start, dec_end) = month_utc_bounds(dec, chrono_tz::UTC);
+        assert_eq!(dec_start.to_rfc3339(), "2026-12-01T00:00:00+00:00");
+        assert_eq!(dec_end.to_rfc3339(), "2027-01-01T00:00:00+00:00");
     }
 }
