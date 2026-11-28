@@ -684,6 +684,20 @@ export function NodeDetailPage() {
                   }}
                 />
               </div>
+              <div className="flex items-center justify-between rounded-md border px-3 py-2 sm:col-span-2">
+                <div>
+                  <div className="text-sm font-medium">Post-Quantum Key Exchange (X25519MLKEM768)</div>
+                  <div className="text-xs text-muted-foreground">
+                    Emit curve_preferences with X25519MLKEM768 and classical X25519/P256 fallback for sing-box 1.13+.
+                  </div>
+                </div>
+                <Switch
+                  checked={tls.pqc_enabled ?? true}
+                  onCheckedChange={(checked) => {
+                    setTls({ ...tls, pqc_enabled: checked })
+                  }}
+                />
+              </div>
               <div className="sm:col-span-2">
                 <Button
                   size="sm"

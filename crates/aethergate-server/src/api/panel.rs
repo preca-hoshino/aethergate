@@ -308,10 +308,8 @@ pub async fn create_node(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("secret encryption failed: {e}")))?;
 
     let tls = req.tls_profile.unwrap_or_else(|| TlsProfile {
-        mode: "self_signed".to_owned(),
         server_name: req.host.clone(),
-        cert_path: "/etc/aethergate/certs/fullchain.pem".to_owned(),
-        key_path: "/etc/aethergate/certs/privkey.pem".to_owned(),
+        ..TlsProfile::default()
     });
     let tls_json = serde_json::to_value(&tls)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("tls serialization failed: {e}")))?;

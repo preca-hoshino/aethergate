@@ -317,6 +317,24 @@ pub fn render_inbound_uri(
     }
 }
 
+/// Builds a `sing-box` client outbound `tls` object with optional PQC `curve_preferences`.
+fn singbox_outbound_tls(tls: &TlsProfile, alpn: Option<&Vec<String>>) -> Value {
+    let mut tls_map = serde_json::Map::new();
+    tls_map.insert("enabled".to_owned(), json!(true));
+    tls_map.insert("server_name".to_owned(), json!(tls.server_name));
+    if let Some(a) = alpn.filter(|v| !v.is_empty()) {
+        tls_map.insert("alpn".to_owned(), json!(a));
+    }
+    tls_map.insert("insecure".to_owned(), json!(tls.mode == "self_signed"));
+    if tls.pqc_enabled {
+        tls_map.insert(
+            "curve_preferences".to_owned(),
+            json!(tls.resolved_curve_preferences()),
+        );
+    }
+    Value::Object(tls_map)
+}
+
 /// Renders a `sing-box` client outbound JSON object for one inbound.
 #[must_use]
 fn render_singbox_outbound(
@@ -368,14 +386,7 @@ fn render_singbox_outbound(
             if let Some(obfs_cfg) = obfs {
                 obj.insert("obfs".to_owned(), json!(obfs_cfg));
             }
-            obj.insert(
-                "tls".to_owned(),
-                json!({
-                    "enabled": true,
-                    "server_name": tls.server_name,
-                    "insecure": tls.mode == "self_signed"
-                }),
-            );
+            obj.insert("tls".to_owned(), singbox_outbound_tls(&tls, None));
             Some(Value::Object(obj))
         }
         InboundProtocolConfig::Tuic {
@@ -392,12 +403,7 @@ fn render_singbox_outbound(
             "password": proxy_password,
             "congestion_control": congestion_control,
             "udp_relay_mode": udp_relay_mode,
-            "tls": {
-                "enabled": true,
-                "server_name": tls.server_name,
-                "alpn": alpn,
-                "insecure": tls.mode == "self_signed"
-            }
+            "tls": singbox_outbound_tls(&tls, Some(&alpn))
         })),
         InboundProtocolConfig::Anytls { .. } => Some(json!({
             "type": "anytls",
@@ -405,11 +411,7 @@ fn render_singbox_outbound(
             "server": row.host,
             "server_port": row.listen_port,
             "password": proxy_password,
-            "tls": {
-                "enabled": true,
-                "server_name": tls.server_name,
-                "insecure": tls.mode == "self_signed"
-            }
+            "tls": singbox_outbound_tls(&tls, None)
         })),
     }
 }

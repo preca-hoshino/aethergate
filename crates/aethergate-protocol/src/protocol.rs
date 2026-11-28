@@ -251,6 +251,9 @@ const fn default_true() -> bool {
     true
 }
 
+/// Default post-quantum hybrid TLS 1.3 key exchange curve preferences for `sing-box` 1.13+.
+pub const DEFAULT_PQC_CURVE_PREFERENCES: &[&str] = &["X25519MLKEM768", "X25519", "P256"];
+
 /// Node-level shared TLS certificate profile reused across Hysteria 2, TUIC, and `AnyTLS`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsProfile {
@@ -262,6 +265,26 @@ pub struct TlsProfile {
     pub cert_path: String,
     /// Path to PEM private key on the node filesystem.
     pub key_path: String,
+    /// Enables post-quantum hybrid key exchange (`X25519MLKEM768`) in `sing-box` 1.13+.
+    #[serde(default = "default_true")]
+    pub pqc_enabled: bool,
+    /// Optional custom TLS `curve_preferences`; defaults to [`DEFAULT_PQC_CURVE_PREFERENCES`] when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_preferences: Vec<String>,
+}
+
+impl TlsProfile {
+    /// Returns the effective TLS `curve_preferences` list when PQC is enabled.
+    #[must_use]
+    pub fn resolved_curve_preferences(&self) -> Vec<String> {
+        if !self.curve_preferences.is_empty() {
+            return self.curve_preferences.clone();
+        }
+        DEFAULT_PQC_CURVE_PREFERENCES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
 }
 
 impl Default for TlsProfile {
@@ -271,6 +294,8 @@ impl Default for TlsProfile {
             server_name: String::new(),
             cert_path: "/etc/aethergate/certs/fullchain.pem".to_string(),
             key_path: "/etc/aethergate/certs/privkey.pem".to_string(),
+            pqc_enabled: true,
+            curve_preferences: Vec::new(),
         }
     }
 }

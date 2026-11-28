@@ -50,6 +50,8 @@ export interface TlsProfile {
   server_name: string
   cert_path: string
   key_path: string
+  pqc_enabled?: boolean
+  curve_preferences?: string[]
 }
 
 export interface NodeInboundSpec {

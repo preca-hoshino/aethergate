@@ -740,6 +740,12 @@ fn shared_tls_block(
     }
     tls_map.insert("certificate_path".to_string(), json!(cert_path));
     tls_map.insert("key_path".to_string(), json!(key_path));
+    if tls.pqc_enabled {
+        tls_map.insert(
+            "curve_preferences".to_string(),
+            json!(tls.resolved_curve_preferences()),
+        );
+    }
     Value::Object(tls_map)
 }
 
