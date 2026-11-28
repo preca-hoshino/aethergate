@@ -440,6 +440,15 @@ fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Returns the optional Mihomo `reality-opts` PQC line when enabled.
+const fn mihomo_reality_pqc_line(pqc_enabled: bool) -> &'static str {
+    if pqc_enabled {
+        "\n      support-x25519mlkem768: true"
+    } else {
+        ""
+    }
+}
+
 /// Appends one Mihomo proxy YAML entry and returns `(node_name, proxy_name)` when valid.
 fn append_mihomo_proxy_entry(
     out: &mut String,
@@ -476,9 +485,10 @@ fn append_mihomo_proxy_entry(
             ..
         } => {
             let sid = short_ids.first().map_or("", String::as_str);
+            let pqc_line = mihomo_reality_pqc_line(tls.pqc_enabled);
             let _ = writeln!(
                 out,
-                "  - name: {}\n    type: vless\n    server: {}\n    port: {}\n    uuid: {}\n    flow: {}\n    tls: true\n    udp: true\n    servername: {}\n    reality: true\n    reality-opts:\n      public-key: {}\n      short-id: {}\n    client-fingerprint: {}\n",
+                "  - name: {}\n    type: vless\n    server: {}\n    port: {}\n    uuid: {}\n    flow: {}\n    tls: true\n    udp: true\n    servername: {}\n    reality: true\n    reality-opts:\n      public-key: {}\n      short-id: {}{pqc_line}\n    client-fingerprint: {fingerprint}\n",
                 yaml_quote(&proxy_name),
                 row.host,
                 row.listen_port,
@@ -487,7 +497,6 @@ fn append_mihomo_proxy_entry(
                 server_name,
                 public_key,
                 sid,
-                fingerprint,
             );
         }
         InboundProtocolConfig::Hysteria2 { obfs, .. } => {
@@ -846,6 +855,7 @@ mod tests {
         );
         assert!(yaml.contains("external-controller: 127.0.0.1:9090"));
         assert!(yaml.contains("name: \"VLESS-Reality (CN-CKG-01)\""));
+        assert!(yaml.contains("support-x25519mlkem768: true"));
         assert!(yaml.contains("name: \"Hysteria2 (CN-CKG-01)\""));
         assert!(yaml.contains("ports: 32000-32999"));
         assert!(yaml.contains("proxy-groups:"));
