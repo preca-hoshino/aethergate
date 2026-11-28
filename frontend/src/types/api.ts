@@ -189,6 +189,29 @@ export interface TimeSeriesBucket {
   downlink_bytes: number
 }
 
+export interface UserTimeSeriesUser {
+  user_id: string
+  display_name: string
+  proxy_username: string
+  total_uplink_bytes: number
+  total_downlink_bytes: number
+}
+
+export interface UserTimeSeriesPoint {
+  bucket: string
+  user_id: string
+  uplink_bytes: number
+  downlink_bytes: number
+}
+
+export interface UsersMonthlyTimeSeries {
+  stat_month: string
+  start_at: string
+  end_at: string
+  users: UserTimeSeriesUser[]
+  points: UserTimeSeriesPoint[]
+}
+
 export interface AuditLogRow {
   id: string
   actor_user_id: string | null
