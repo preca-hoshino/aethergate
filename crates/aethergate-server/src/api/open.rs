@@ -620,6 +620,106 @@ async fn collect_pending_actions(
     Ok(actions)
 }
 
+/// Distributes reported Clash API connection counts across a physical node and its logical children.
+fn distribute_node_connections(
+    physical_node_id: Uuid,
+    child_ids: &[Uuid],
+    owner_map: &HashMap<String, Uuid>,
+    total_connections: u32,
+    inbound_connections: &HashMap<String, u32>,
+) -> HashMap<Uuid, i32> {
+    let mut result = HashMap::with_capacity(child_ids.len().saturating_add(1));
+    result.insert(physical_node_id, 0);
+    for &cid in child_ids {
+        result.insert(cid, 0);
+    }
+
+    if inbound_connections.is_empty() {
+        result.insert(
+            physical_node_id,
+            i32::try_from(total_connections).unwrap_or(i32::MAX),
+        );
+        return result;
+    }
+
+    let mut attributed_total: u32 = 0;
+    for (tag, &count) in inbound_connections {
+        attributed_total = attributed_total.saturating_add(count);
+        let target = owner_map.get(tag).copied().unwrap_or(physical_node_id);
+        let entry = result.entry(target).or_insert(0);
+        *entry = entry.saturating_add(i32::try_from(count).unwrap_or(i32::MAX));
+    }
+
+    if total_connections > attributed_total {
+        let remainder = total_connections.saturating_sub(attributed_total);
+        let entry = result.entry(physical_node_id).or_insert(0);
+        *entry = entry.saturating_add(i32::try_from(remainder).unwrap_or(i32::MAX));
+    }
+
+    result
+}
+
+/// Updates `active_connections` independently for a physical host and any child logical nodes.
+async fn update_node_active_connections(
+    state: &AppState,
+    physical_node_id: Uuid,
+    report: &NodeStatusReport,
+) -> AppResult<()> {
+    let child_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM nodes WHERE parent_node_id = $1")
+        .bind(physical_node_id)
+        .fetch_all(&state.db)
+        .await?;
+
+    if child_ids.is_empty() {
+        sqlx::query("UPDATE nodes SET active_connections = $2 WHERE id = $1")
+            .bind(physical_node_id)
+            .bind(i32::try_from(report.active_connections).unwrap_or(i32::MAX))
+            .execute(&state.db)
+            .await?;
+        return Ok(());
+    }
+
+    let inbound_owners: Vec<(String, Uuid)> = if report.inbound_connections.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            r"
+            SELECT tag, node_id
+            FROM node_inbounds
+            WHERE node_id = $1 OR node_id = ANY($2)
+            ",
+        )
+        .bind(physical_node_id)
+        .bind(&child_ids)
+        .fetch_all(&state.db)
+        .await?
+    };
+
+    let owner_map: HashMap<String, Uuid> = inbound_owners.into_iter().collect();
+    let per_node = distribute_node_connections(
+        physical_node_id,
+        &child_ids,
+        &owner_map,
+        report.active_connections,
+        &report.inbound_connections,
+    );
+    let (ids, counts): (Vec<Uuid>, Vec<i32>) = per_node.into_iter().unzip();
+    sqlx::query(
+        r"
+        UPDATE nodes AS n
+        SET active_connections = v.cnt
+        FROM UNNEST($1::uuid[], $2::int4[]) AS v(id, cnt)
+        WHERE n.id = v.id
+        ",
+    )
+    .bind(&ids)
+    .bind(&counts)
+    .execute(&state.db)
+    .await?;
+
+    Ok(())
+}
+
 /// `POST /api/open/v1/report/status` - returns `204 No Content` when idle or `200 OK` with actions.
 pub async fn open_report_status(
     State(state): State<AppState>,
@@ -647,9 +747,8 @@ pub async fn open_report_status(
             cpu_pct = CASE WHEN id = $1 THEN $5 ELSE cpu_pct END,
             mem_pct = CASE WHEN id = $1 THEN $6 ELSE mem_pct END,
             mem_used_mib = CASE WHEN id = $1 THEN $7 ELSE mem_used_mib END,
-            active_connections = CASE WHEN id = $1 THEN $8 ELSE 0 END,
-            active_users = CASE WHEN id = $1 THEN $9 ELSE active_users END,
-            uptime_secs = $10,
+            active_users = CASE WHEN id = $1 THEN $8 ELSE active_users END,
+            uptime_secs = $9,
             last_seen_at = NOW(),
             updated_at = NOW()
         WHERE id = $1 OR parent_node_id = $1
@@ -662,11 +761,12 @@ pub async fn open_report_status(
     .bind(report.cpu_pct)
     .bind(report.mem_pct)
     .bind(i32::try_from(report.mem_used_mib).unwrap_or(i32::MAX))
-    .bind(i32::try_from(report.active_connections).unwrap_or(i32::MAX))
     .bind(i32::try_from(report.active_users).unwrap_or(i32::MAX))
     .bind(i64::try_from(report.uptime_secs).unwrap_or(i64::MAX))
     .execute(&state.db)
     .await?;
+
+    update_node_active_connections(&state, node.id, &report).await?;
 
     state.mark_ws_dirty();
 
@@ -807,4 +907,50 @@ pub async fn open_ack_command(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distribute_node_connections_assigns_logical_nodes_independently() {
+        let physical = Uuid::new_v4();
+        let logical_a = Uuid::new_v4();
+        let logical_b = Uuid::new_v4();
+
+        let owner_map = HashMap::from([
+            ("in-phys".to_owned(), physical),
+            ("in-cernet-vless".to_owned(), logical_a),
+            ("in-cernet-hy2".to_owned(), logical_a),
+            ("in-relay-tuic".to_owned(), logical_b),
+        ]);
+        let inbound_conns = HashMap::from([
+            ("in-phys".to_owned(), 2),
+            ("in-cernet-vless".to_owned(), 3),
+            ("in-cernet-hy2".to_owned(), 4),
+            ("in-relay-tuic".to_owned(), 5),
+        ]);
+
+        let result = distribute_node_connections(
+            physical,
+            &[logical_a, logical_b],
+            &owner_map,
+            14,
+            &inbound_conns,
+        );
+        assert_eq!(result.get(&physical), Some(&2));
+        assert_eq!(result.get(&logical_a), Some(&7));
+        assert_eq!(result.get(&logical_b), Some(&5));
+    }
+
+    #[test]
+    fn distribute_node_connections_falls_back_for_legacy_agent() {
+        let physical = Uuid::new_v4();
+        let logical = Uuid::new_v4();
+        let result =
+            distribute_node_connections(physical, &[logical], &HashMap::new(), 9, &HashMap::new());
+        assert_eq!(result.get(&physical), Some(&9));
+        assert_eq!(result.get(&logical), Some(&0));
+    }
 }

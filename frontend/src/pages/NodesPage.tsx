@@ -109,20 +109,25 @@ export function NodesPage() {
     () => [
       {
         id: 'name',
-        accessorFn: (row) => `${row.name} ${row.region}`,
+        accessorFn: (row) =>
+          `${row.name} ${row.region} ${row.parent_node_id ? t('nodes.logicalBadge') : t('nodes.physicalBadge')}`,
         meta: { label: t('nodes.columns.name') },
         header: ({ column }) => <DataTableColumnHeader column={column} title={t('nodes.columns.name')} />,
         cell: ({ row }) => {
           const node = row.original
           return (
-            <div>
-              <div className="flex items-center gap-2 font-medium">
+            <div className="space-y-1">
+              <div className="font-medium">
                 <Link to="/nodes/$nodeId" params={{ nodeId: node.id }} className="hover:underline">
                   {node.name}
                 </Link>
-                {node.parent_node_id && <Badge variant="outline">{t('nodes.logicalBadge')}</Badge>}
               </div>
               <div className="text-muted-foreground text-xs">{node.region}</div>
+              <div>
+                <Badge variant={node.parent_node_id ? 'outline' : 'secondary'}>
+                  {node.parent_node_id ? t('nodes.logicalBadge') : t('nodes.physicalBadge')}
+                </Badge>
+              </div>
             </div>
           )
         },

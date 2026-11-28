@@ -136,10 +136,6 @@ export const en = {
   dashboard: {
     title: 'Dashboard',
     subtitle: 'Natural calendar month summary ({{month}}) · resets on the 1st of each month.',
-    tabs: {
-      overview: 'Overview',
-      liveNodes: 'Live Nodes',
-    },
     kpi: {
       monthlyTraffic: 'Monthly Traffic',
       onlineNodes: 'Online Nodes',
@@ -157,15 +153,9 @@ export const en = {
       noTimeseries: 'No throughput data recorded in the past 24 hours.',
     },
     topUsers: {
-      title: 'Top Users ({{month}})',
+      title: 'Top Users',
       desc: 'Highest monthly proxy bandwidth consumers',
       empty: 'No traffic recorded for {{month}} yet.',
-    },
-    liveNodesCard: {
-      monthlyTraffic: 'Monthly Traffic',
-      cpuRam: 'CPU / RAM',
-      connections: 'Connections',
-      empty: 'No managed nodes registered yet.',
     },
   },
   nodes: {
@@ -210,6 +200,7 @@ export const en = {
       monthTraffic: 'Month Traffic',
     },
     logicalBadge: 'Logical',
+    physicalBadge: 'Physical',
     configure: 'Configure',
     empty: 'No nodes registered yet. Click "Add Node" to bootstrap your first edge node.',
   },
@@ -431,6 +422,7 @@ export const en = {
       general: 'General & Telemetry',
       mihomo: 'Subscription Template',
       appearance: 'Appearance & Language',
+      about: 'About',
     },
     oidc: {
       title: 'OIDC / SSO Provider',
@@ -477,6 +469,14 @@ export const en = {
       },
       resetLayout: 'Reset Layout Defaults',
       layoutResetToast: 'Layout preferences reset to defaults',
+    },
+    about: {
+      title: 'About Æthergate',
+      desc: 'Control plane version, build commit metadata, and open-source license.',
+      version: 'Version',
+      commit: 'Commit',
+      license: 'License',
+      repository: 'GitHub Repository',
     },
   },
   portal: {

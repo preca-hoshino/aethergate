@@ -103,7 +103,8 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/settings/mihomo-template",
             get(panel::get_mihomo_template).put(panel::update_mihomo_template),
-        );
+        )
+        .route("/system/about", get(panel::get_system_about));
 
     Router::new()
         .route("/healthz", get(healthz))

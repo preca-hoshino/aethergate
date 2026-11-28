@@ -241,6 +241,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           load: true
           provenance: false
+          build-args: GIT_COMMIT=${{ github.sha }}
           tags: aethergate-server:test-${{ matrix.arch }}
           cache-from: type=gha,scope=docker-server-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=docker-server-${{ matrix.arch }}
@@ -285,6 +286,7 @@ jobs:
           file: ./deploy/server/Dockerfile
           platforms: ${{ matrix.platform }}
           provenance: false
+          build-args: GIT_COMMIT=${{ github.sha }}
           outputs: type=image,name=ghcr.io/${{ steps.meta.outputs.owner }}/aethergate-server,push-by-digest=true,push=true
           cache-from: type=gha,scope=docker-server-${{ matrix.arch }}
 

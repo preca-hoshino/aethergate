@@ -27,7 +27,9 @@ COPY Cargo.toml Cargo.lock sqlx.toml ./
 COPY crates/ ./crates/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
+ARG GIT_COMMIT=unknown
 RUN TARGET="$(cat /tmp/rust-target)" \
+    && export AETHERGATE_GIT_COMMIT="${GIT_COMMIT}" \
     && export CC_x86_64_unknown_linux_musl=musl-gcc \
     && export CC_aarch64_unknown_linux_musl=musl-gcc \
     && export RUSTFLAGS="-C target-feature=+crt-static" \

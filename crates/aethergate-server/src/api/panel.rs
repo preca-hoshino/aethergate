@@ -1769,7 +1769,7 @@ pub async fn get_analytics_overview(
         SELECT
             COUNT(*) FILTER (WHERE status = 'online')::bigint,
             COUNT(*)::bigint,
-            COALESCE(SUM(active_connections) FILTER (WHERE status = 'online' AND parent_node_id IS NULL), 0)::bigint
+            COALESCE(SUM(active_connections) FILTER (WHERE status = 'online'), 0)::bigint
         FROM nodes
         ",
     )
@@ -1806,6 +1806,8 @@ pub struct UserMonthlyTrafficDto {
     pub user_id: Uuid,
     /// Display name.
     pub display_name: String,
+    /// Optional OIDC email address.
+    pub email: Option<String>,
     /// Optional OIDC avatar URL.
     pub avatar_url: Option<String>,
     /// Immutable proxy username.
@@ -1830,7 +1832,7 @@ pub async fn get_analytics_users(
     let rows = sqlx::query_as::<_, UserMonthlyTrafficDto>(
         r"
         SELECT
-            u.id AS user_id, u.display_name, u.avatar_url, u.proxy_username,
+            u.id AS user_id, u.display_name, u.email, u.avatar_url, u.proxy_username,
             COALESCE(t.uplink_bytes, 0) AS uplink_bytes,
             COALESCE(t.downlink_bytes, 0) AS downlink_bytes,
             COALESCE(t.peak_uplink_bps, 0) AS peak_uplink_bps,
@@ -2257,4 +2259,37 @@ pub async fn update_mihomo_template(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Control-plane build, version, license, and repository metadata.
+#[derive(Debug, Serialize)]
+pub struct AboutInfoDto {
+    /// Semantic package version.
+    pub version: &'static str,
+    /// Short Git commit SHA (or `"unknown"` when unavailable).
+    pub commit: String,
+    /// Full Git commit SHA (or `"unknown"` when unavailable).
+    pub commit_full: String,
+    /// SPDX license identifier.
+    pub license: &'static str,
+    /// Upstream GitHub repository URL.
+    pub repository_url: &'static str,
+}
+
+/// `GET /api/v1/system/about`
+pub async fn get_system_about(AuthenticatedUser(_user): AuthenticatedUser) -> Json<AboutInfoDto> {
+    let commit_full = env!("AETHERGATE_BUILD_COMMIT").to_owned();
+    let commit = if commit_full == "unknown" {
+        "unknown".to_owned()
+    } else {
+        commit_full.chars().take(7).collect()
+    };
+
+    Json(AboutInfoDto {
+        version: env!("CARGO_PKG_VERSION"),
+        commit,
+        commit_full,
+        license: env!("CARGO_PKG_LICENSE"),
+        repository_url: env!("CARGO_PKG_REPOSITORY"),
+    })
 }

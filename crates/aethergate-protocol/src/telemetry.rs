@@ -3,6 +3,8 @@
 //! Supports adaptive `Eco` (30s) / `Realtime` (5s) reporting cadences, idempotent batch
 //! deduplication via `batch_id`, and `204 No Content` / `200 OK` control-plane responses.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,6 +41,9 @@ pub struct NodeStatusReport {
     pub mem_used_mib: u32,
     /// Current active TCP/UDP proxy connections count from Clash API.
     pub active_connections: u32,
+    /// Active TCP/UDP proxy connections grouped by inbound tag (`inbound_tag -> count`).
+    #[serde(default)]
+    pub inbound_connections: HashMap<String, u32>,
     /// Currently active user count on the node.
     pub active_users: u32,
     /// Currently applied config revision on the node.

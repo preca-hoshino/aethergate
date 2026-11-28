@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { FileCode2, Palette, RotateCcw, Save, Wrench } from 'lucide-react'
+import { ExternalLink, FileCode2, Info, Palette, RotateCcw, Save, Wrench } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { getActiveLocale, setAppLocale, type AppLocale } from '@/i18n'
@@ -12,7 +12,7 @@ import {
   type SidebarVariant,
   type ThemeMode,
 } from '@/stores/use-app-store'
-import type { AuthProvidersResponse } from '@/types/api'
+import type { AboutInfo, AuthProvidersResponse } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,7 +26,7 @@ interface MihomoTemplateDto {
   rules_yaml: string
 }
 
-type SettingsSection = 'general' | 'mihomo' | 'appearance'
+type SettingsSection = 'general' | 'mihomo' | 'appearance' | 'about'
 
 export function SettingsPage() {
   const { t, i18n } = useTranslation()
@@ -50,6 +50,11 @@ export function SettingsPage() {
   const { data: template } = useQuery({
     queryKey: ['mihomo-template'],
     queryFn: () => api.get<MihomoTemplateDto>('/api/v1/settings/mihomo-template'),
+  })
+
+  const { data: aboutInfo } = useQuery({
+    queryKey: ['system-about'],
+    queryFn: () => api.get<AboutInfo>('/api/v1/system/about'),
   })
 
   const [headerDns, setHeaderDns] = useState('')
@@ -80,6 +85,7 @@ export function SettingsPage() {
     { id: 'general', title: t('settings.sections.general'), icon: Wrench },
     { id: 'mihomo', title: t('settings.sections.mihomo'), icon: FileCode2 },
     { id: 'appearance', title: t('settings.sections.appearance'), icon: Palette },
+    { id: 'about', title: t('settings.sections.about'), icon: Info },
   ]
 
   return (
@@ -327,6 +333,52 @@ export function SettingsPage() {
                     <RotateCcw className="size-3.5" />
                     <span>{t('settings.appearance.resetLayout')}</span>
                   </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {section === 'about' && (
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle>{t('settings.about.title')}</CardTitle>
+                <CardDescription>{t('settings.about.desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">{t('settings.about.version')}</span>
+                  <span className="font-mono font-medium">
+                    v{aboutInfo?.version ?? '0.1.0'}
+                  </span>
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">{t('settings.about.commit')}</span>
+                  <span className="font-mono text-xs" title={aboutInfo?.commit_full}>
+                    {aboutInfo?.commit ?? '—'}
+                  </span>
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">{t('settings.about.license')}</span>
+                  <Badge variant="outline">{aboutInfo?.license ?? 'AGPL-3.0'}</Badge>
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground shrink-0">
+                    {t('settings.about.repository')}
+                  </span>
+                  <a
+                    href={aboutInfo?.repository_url ?? 'https://github.com/preca-hoshino/aethergate'}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary inline-flex min-w-0 items-center gap-1.5 font-mono text-xs hover:underline"
+                  >
+                    <span className="truncate">
+                      {aboutInfo?.repository_url ?? 'https://github.com/preca-hoshino/aethergate'}
+                    </span>
+                    <ExternalLink className="size-3.5 shrink-0" />
+                  </a>
                 </div>
               </CardContent>
             </Card>

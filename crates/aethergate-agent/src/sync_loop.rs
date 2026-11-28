@@ -215,6 +215,8 @@ struct AgentRuntime {
     buffer: TelemetryBuffer,
     /// Last active connections count.
     last_active_conns: u32,
+    /// Last active connections grouped by inbound tag.
+    last_inbound_conns: HashMap<String, u32>,
 }
 
 /// Runs the complete node agent lifecycle until Ctrl-C.
@@ -268,6 +270,7 @@ pub async fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         last_cert_mtime: None,
         buffer: TelemetryBuffer::new(Utc::now()),
         last_active_conns: 0,
+        last_inbound_conns: HashMap::new(),
     };
 
     runtime.apply_and_reload_singbox().await?;
@@ -375,15 +378,16 @@ impl AgentRuntime {
 
     /// Samples gRPC traffic counters and Clash connection counts once.
     async fn sample_once(&mut self) {
-        let (total_conns, per_user_conns) = self
+        let conn_snap = self
             .clash_client
             .snapshot_connections()
             .await
             .unwrap_or_default();
-        self.last_active_conns = total_conns;
+        self.last_active_conns = conn_snap.total;
+        self.last_inbound_conns = conn_snap.per_inbound;
 
         if let Ok(snap) = self.stats_client.query_and_reset().await {
-            self.buffer.merge_snapshot(&snap, &per_user_conns);
+            self.buffer.merge_snapshot(&snap, &conn_snap.per_user);
         }
     }
 
@@ -458,6 +462,7 @@ impl AgentRuntime {
             mem_pct,
             mem_used_mib,
             active_connections: self.last_active_conns,
+            inbound_connections: self.last_inbound_conns.clone(),
             active_users: u32::try_from(self.users.len()).unwrap_or(u32::MAX),
             config_revision: self.config_revision,
             user_revision: self.user_revision,

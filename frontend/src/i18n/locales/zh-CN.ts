@@ -138,10 +138,6 @@ export const zhCN: TranslationSchema = {
   dashboard: {
     title: '总览仪表盘',
     subtitle: '自然月度流量汇总（{{month}}）· 每月 1 日零点自动重置周期。',
-    tabs: {
-      overview: '核心概览',
-      liveNodes: '节点实时状态',
-    },
     kpi: {
       monthlyTraffic: '本月总流量',
       onlineNodes: '在线节点数',
@@ -159,15 +155,9 @@ export const zhCN: TranslationSchema = {
       noTimeseries: '过去 24 小时暂无流量吞吐记录。',
     },
     topUsers: {
-      title: '用户流量排行 ({{month}})',
+      title: '用户流量排行',
       desc: '本月代理流量消耗居前的用户',
       empty: '{{month}} 暂无用户流量记录。',
-    },
-    liveNodesCard: {
-      monthlyTraffic: '本月累计流量',
-      cpuRam: 'CPU / 内存占用',
-      connections: '活跃连接数',
-      empty: '暂未添加任何边缘节点。',
     },
   },
   nodes: {
@@ -212,6 +202,7 @@ export const zhCN: TranslationSchema = {
       monthTraffic: '本月流量',
     },
     logicalBadge: '逻辑节点',
+    physicalBadge: '物理节点',
     configure: '配置管理',
     empty: '暂无已注册节点，请点击右上角「添加节点」引导首个边缘节点。',
   },
@@ -433,6 +424,7 @@ export const zhCN: TranslationSchema = {
       general: '常规与遥测策略',
       mihomo: 'Mihomo 订阅模板',
       appearance: '外观与语言',
+      about: '关于',
     },
     oidc: {
       title: 'OIDC / 单点登录提供方',
@@ -479,6 +471,14 @@ export const zhCN: TranslationSchema = {
       },
       resetLayout: '恢复默认布局设置',
       layoutResetToast: '布局偏好设置已恢复默认',
+    },
+    about: {
+      title: '关于 Æthergate',
+      desc: '当前控制平面版本号、构建 Commit 信息与开源许可证。',
+      version: '版本号',
+      commit: 'Commit 号',
+      license: '许可证',
+      repository: 'GitHub 仓库',
     },
   },
   portal: {

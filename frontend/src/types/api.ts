@@ -135,12 +135,21 @@ export interface AnalyticsOverview {
 export interface UserMonthlyTraffic {
   user_id: string
   display_name: string
+  email: string | null
   avatar_url: string | null
   proxy_username: string
   uplink_bytes: number
   downlink_bytes: number
   peak_uplink_bps: number
   peak_downlink_bps: number
+}
+
+export interface AboutInfo {
+  version: string
+  commit: string
+  commit_full: string
+  license: string
+  repository_url: string
 }
 
 export interface NodeMonthlyTraffic {
