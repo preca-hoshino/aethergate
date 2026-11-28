@@ -12,6 +12,8 @@ use axum::http::header::{self, HeaderName, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use chrono::{Datelike, NaiveDate, TimeZone};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -611,19 +613,48 @@ pub fn render_mihomo_yaml(
 /// HTTP response header used by Clash/Mihomo/v2rayN/Shadowrocket clients to display traffic usage.
 const SUBSCRIPTION_USERINFO_HEADER: HeaderName = HeaderName::from_static("subscription-userinfo");
 
-/// Formats the `Subscription-Userinfo` header value from monthly uplink and downlink bytes.
+/// HTTP response header used by Clash/Mihomo clients to schedule periodic subscription updates (in hours).
+const PROFILE_UPDATE_INTERVAL_HEADER: HeaderName =
+    HeaderName::from_static("profile-update-interval");
+
+/// Default monthly virtual traffic quota (1 TiB = 1,099,511,627,776 bytes).
+const DEFAULT_VIRTUAL_TOTAL_BYTES: i64 = 1024 * 1024 * 1024 * 1024;
+
+/// Computes the Unix timestamp (seconds) of the start of the next calendar month in `tz`.
+fn next_month_timestamp(stat_month: NaiveDate, tz: Tz) -> i64 {
+    let (year, month) = if stat_month.month() == 12 {
+        (stat_month.year() + 1, 1)
+    } else {
+        (stat_month.year(), stat_month.month() + 1)
+    };
+
+    NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .and_then(|dt| tz.from_local_datetime(&dt).single())
+        .map_or(0, |dt| dt.timestamp())
+}
+
+/// Formats the `Subscription-Userinfo` header value from monthly uplink, downlink bytes and expiration timestamp.
 #[must_use]
-fn format_subscription_userinfo(uplink_bytes: i64, downlink_bytes: i64) -> String {
+fn format_subscription_userinfo(
+    uplink_bytes: i64,
+    downlink_bytes: i64,
+    total_bytes: i64,
+    expire_ts: i64,
+) -> String {
     format!(
-        "upload={}; download={}; total=0; expire=0",
+        "upload={}; download={}; total={}; expire={}",
         uplink_bytes.max(0),
-        downlink_bytes.max(0)
+        downlink_bytes.max(0),
+        total_bytes.max(1),
+        expire_ts.max(0)
     )
 }
 
-/// Loads the user's current calendar-month `(uplink_bytes, downlink_bytes)` from `user_monthly_traffic`.
-async fn load_user_monthly_traffic(state: &AppState, user_id: Uuid) -> AppResult<(i64, i64)> {
+/// Loads the user's current calendar-month `(uplink_bytes, downlink_bytes, expire_ts)` from `user_monthly_traffic`.
+async fn load_user_monthly_traffic(state: &AppState, user_id: Uuid) -> AppResult<(i64, i64, i64)> {
     let stat_month = crate::telemetry::parse_stat_month(None, state.stats_tz)?;
+    let expire_ts = next_month_timestamp(stat_month, state.stats_tz);
     let (uplink_bytes, downlink_bytes) = sqlx::query_as::<_, (i64, i64)>(
         r"
         SELECT
@@ -639,7 +670,7 @@ async fn load_user_monthly_traffic(state: &AppState, user_id: Uuid) -> AppResult
     .await?
     .unwrap_or((0, 0));
 
-    Ok((uplink_bytes, downlink_bytes))
+    Ok((uplink_bytes, downlink_bytes, expire_ts))
 }
 
 /// `GET /sub/{token}` - public subscription endpoint gated by `sub_token`, `panel_status`, and `proxy_enabled`.
@@ -669,8 +700,14 @@ pub async fn get_subscription(
     }
 
     let inbounds = load_authorized_inbounds_for_user(&state, user.id).await?;
-    let (uplink_bytes, downlink_bytes) = load_user_monthly_traffic(&state, user.id).await?;
-    let userinfo = format_subscription_userinfo(uplink_bytes, downlink_bytes);
+    let (uplink_bytes, downlink_bytes, expire_ts) =
+        load_user_monthly_traffic(&state, user.id).await?;
+    let userinfo = format_subscription_userinfo(
+        uplink_bytes,
+        downlink_bytes,
+        DEFAULT_VIRTUAL_TOTAL_BYTES,
+        expire_ts,
+    );
 
     let mut response = if query.format.eq_ignore_ascii_case("mihomo")
         || query.format.eq_ignore_ascii_case("clash")
@@ -683,7 +720,7 @@ pub async fn get_subscription(
                 (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
                 (
                     header::CONTENT_DISPOSITION,
-                    "inline; filename=\"aethergate.yaml\"",
+                    "attachment; filename=\"aethergate.yaml\"",
                 ),
             ],
             yaml,
@@ -698,7 +735,13 @@ pub async fn get_subscription(
             .map_err(|e| AppError::Internal(anyhow::anyhow!("JSON serialization error: {e}")))?;
         (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            [
+                (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"aethergate.json\"",
+                ),
+            ],
             body,
         )
             .into_response()
@@ -711,7 +754,13 @@ pub async fn get_subscription(
         let encoded = STANDARD.encode(uris.join("\n"));
         (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"aethergate.txt\"",
+                ),
+            ],
             encoded,
         )
             .into_response()
@@ -722,6 +771,10 @@ pub async fn get_subscription(
             .headers_mut()
             .insert(SUBSCRIPTION_USERINFO_HEADER, header_value);
     }
+    response.headers_mut().insert(
+        PROFILE_UPDATE_INTERVAL_HEADER,
+        HeaderValue::from_static("24"),
+    );
 
     Ok(response)
 }
@@ -729,6 +782,7 @@ pub async fn get_subscription(
 #[cfg(test)]
 mod tests {
     use aethergate_protocol::Hy2ObfsConfig;
+    use chrono::Timelike;
 
     use super::*;
 
@@ -913,12 +967,49 @@ mod tests {
     #[test]
     fn formats_subscription_userinfo_header() {
         assert_eq!(
-            format_subscription_userinfo(1_048_576, 2_097_152),
-            "upload=1048576; download=2097152; total=0; expire=0"
+            format_subscription_userinfo(
+                1_048_576,
+                2_097_152,
+                DEFAULT_VIRTUAL_TOTAL_BYTES,
+                1_764_547_200
+            ),
+            "upload=1048576; download=2097152; total=1099511627776; expire=1764547200"
         );
         assert_eq!(
-            format_subscription_userinfo(-10, 0),
-            "upload=0; download=0; total=0; expire=0"
+            format_subscription_userinfo(-10, 0, 0, -1),
+            "upload=0; download=0; total=1; expire=0"
         );
+    }
+
+    #[test]
+    fn next_month_timestamp_calculates_boundary() {
+        let Ok(tz) = "Asia/Shanghai".parse::<Tz>() else {
+            return;
+        };
+        let Some(stat_month) = NaiveDate::from_ymd_opt(2026, 11, 1) else {
+            return;
+        };
+        let ts = next_month_timestamp(stat_month, tz);
+        let Some(dt) = tz.timestamp_opt(ts, 0).single() else {
+            return;
+        };
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), 12);
+        assert_eq!(dt.day(), 1);
+        assert_eq!(dt.hour(), 0);
+        assert_eq!(dt.minute(), 0);
+        assert_eq!(dt.second(), 0);
+
+        // Year wrap-around: December -> January
+        let Some(dec) = NaiveDate::from_ymd_opt(2026, 12, 1) else {
+            return;
+        };
+        let ts_dec = next_month_timestamp(dec, tz);
+        let Some(dt_dec) = tz.timestamp_opt(ts_dec, 0).single() else {
+            return;
+        };
+        assert_eq!(dt_dec.year(), 2027);
+        assert_eq!(dt_dec.month(), 1);
+        assert_eq!(dt_dec.day(), 1);
     }
 }
