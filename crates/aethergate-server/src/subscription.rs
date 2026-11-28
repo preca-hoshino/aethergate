@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use axum::extract::{Path, Query, State};
-use axum::http::header::{self, HeaderName, HeaderValue};
 use axum::http::StatusCode;
+use axum::http::header::{self, HeaderName, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -672,51 +672,50 @@ pub async fn get_subscription(
     let (uplink_bytes, downlink_bytes) = load_user_monthly_traffic(&state, user.id).await?;
     let userinfo = format_subscription_userinfo(uplink_bytes, downlink_bytes);
 
-    let mut response =
-        if query.format.eq_ignore_ascii_case("mihomo") || query.format.eq_ignore_ascii_case("clash")
-        {
-            let template = load_mihomo_template(&state).await?;
-            let yaml =
-                render_mihomo_yaml(&inbounds, user.proxy_uuid, &user.proxy_password, &template);
-            (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
-                    (
-                        header::CONTENT_DISPOSITION,
-                        "inline; filename=\"aethergate.yaml\"",
-                    ),
-                ],
-                yaml,
-            )
-                .into_response()
-        } else if query.format.eq_ignore_ascii_case("singbox") {
-            let outbounds: Vec<Value> = inbounds
-                .iter()
-                .filter_map(|row| render_singbox_outbound(row, user.proxy_uuid, &user.proxy_password))
-                .collect();
-            let body = serde_json::to_string_pretty(&json!({ "outbounds": outbounds }))
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("JSON serialization error: {e}")))?;
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-                body,
-            )
-                .into_response()
-        } else {
-            let uris: Vec<String> = inbounds
-                .iter()
-                .filter_map(|row| render_inbound_uri(row, user.proxy_uuid, &user.proxy_password))
-                .map(|(_, uri)| uri)
-                .collect();
-            let encoded = STANDARD.encode(uris.join("\n"));
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                encoded,
-            )
-                .into_response()
-        };
+    let mut response = if query.format.eq_ignore_ascii_case("mihomo")
+        || query.format.eq_ignore_ascii_case("clash")
+    {
+        let template = load_mihomo_template(&state).await?;
+        let yaml = render_mihomo_yaml(&inbounds, user.proxy_uuid, &user.proxy_password, &template);
+        (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "inline; filename=\"aethergate.yaml\"",
+                ),
+            ],
+            yaml,
+        )
+            .into_response()
+    } else if query.format.eq_ignore_ascii_case("singbox") {
+        let outbounds: Vec<Value> = inbounds
+            .iter()
+            .filter_map(|row| render_singbox_outbound(row, user.proxy_uuid, &user.proxy_password))
+            .collect();
+        let body = serde_json::to_string_pretty(&json!({ "outbounds": outbounds }))
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("JSON serialization error: {e}")))?;
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            body,
+        )
+            .into_response()
+    } else {
+        let uris: Vec<String> = inbounds
+            .iter()
+            .filter_map(|row| render_inbound_uri(row, user.proxy_uuid, &user.proxy_password))
+            .map(|(_, uri)| uri)
+            .collect();
+        let encoded = STANDARD.encode(uris.join("\n"));
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            encoded,
+        )
+            .into_response()
+    };
 
     if let Ok(header_value) = HeaderValue::from_str(&userinfo) {
         response
