@@ -7,6 +7,7 @@ services:
     image: ghcr.nju.edu.cn/${AETHERGATE_IMAGE_OWNER:-preca-hoshino}/aethergate-agent:${AETHERGATE_TAG:-latest}
     container_name: aethergate-agent
     restart: unless-stopped
+    stop_grace_period: 30s
     network_mode: host
     cap_add:
       - NET_ADMIN

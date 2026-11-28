@@ -1,0 +1,294 @@
+name: Deploy Agent to Edge Nodes
+
+on:
+  workflow_run:
+    workflows: ["CI & Release Pipeline"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to deploy (leave empty for latest)"
+        required: false
+        default: ""
+      target_node:
+        description: "Optional single node name to deploy (leave empty for all)"
+        required: false
+        default: ""
+      force:
+        description: "Deploy even if no agent/protocol files changed"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  prepare:
+    name: Prepare Agent Rollout Matrix
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       vars.ENABLE_AGENT_AUTO_DEPLOY == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+      matrix: ${{ steps.check.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+
+      - name: Resolve release tag, change scope, and node matrix
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          INPUT_NODE: ${{ inputs.target_node }}
+          INPUT_FORCE: ${{ inputs.force }}
+          AGENT_NODES_JSON: ${{ secrets.AGENT_NODES_JSON }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+          fi
+          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+            TAG="latest"
+          fi
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          SHOULD_DEPLOY="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${INPUT_FORCE}" = "true" ] || [ -n "${INPUT_TAG}" ] || [ -n "${INPUT_NODE}" ]; then
+              SHOULD_DEPLOY="true"
+            fi
+          fi
+
+          if [ "${SHOULD_DEPLOY}" = "false" ]; then
+            HEAD_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+            git fetch --tags --depth=50 >/dev/null 2>&1 || true
+            PREV_TAG=$(gh release list --repo "${{ github.repository }}" --limit 2 --json tagName --jq '.[1].tagName // empty' 2>/dev/null || true)
+
+            if [ -n "${PREV_TAG}" ] && git rev-parse --verify "${PREV_TAG}^{commit}" >/dev/null 2>&1; then
+              CHANGED=$(git diff --name-only "${PREV_TAG}" "${HEAD_SHA}" || true)
+            else
+              CHANGED=$(git diff --name-only "${HEAD_SHA}~1" "${HEAD_SHA}" 2>/dev/null || true)
+            fi
+
+            if [ -z "${CHANGED}" ]; then
+              SHOULD_DEPLOY="true"
+            elif printf '%s\n' "${CHANGED}" | grep -qE '^(crates/aethergate-agent/|crates/aethergate-protocol/|deploy/agent/|\.github/workflows/ci-release\.yml)'; then
+              SHOULD_DEPLOY="true"
+            fi
+          fi
+
+          if [ -z "${AGENT_NODES_JSON}" ]; then
+            echo "AGENT_NODES_JSON secret is empty; skipping agent deploy."
+            SHOULD_DEPLOY="false"
+            MATRIX="[]"
+          elif [ -n "${INPUT_NODE}" ]; then
+            MATRIX=$(printf '%s' "${AGENT_NODES_JSON}" | jq -c --arg target "${INPUT_NODE}" '[.[] | select(.name == $target)]')
+            if [ "${MATRIX}" = "[]" ]; then
+              echo "No node named '${INPUT_NODE}' found in AGENT_NODES_JSON" >&2
+              exit 1
+            fi
+          else
+            MATRIX=$(printf '%s' "${AGENT_NODES_JSON}" | jq -c '.')
+          fi
+
+          echo "should_deploy=${SHOULD_DEPLOY}" >> "$GITHUB_OUTPUT"
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "should_deploy=${SHOULD_DEPLOY}, release_tag=${TAG}, matrix_count=$(printf '%s' "${MATRIX}" | jq 'length')"
+
+  deploy:
+    name: Deploy Agent (${{ matrix.node.name }})
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_deploy == 'true' && needs.prepare.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        node: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Rolling Deploy, Verify & Rollback on Failure
+        env:
+          NODE_NAME: ${{ matrix.node.name }}
+          NODE_HOST: ${{ matrix.node.host }}
+          NODE_PORT: ${{ matrix.node.port || 22 }}
+          NODE_USER: ${{ matrix.node.user || 'root' }}
+          NODE_DIR: ${{ matrix.node.dir || '/docker/aethergate-agent' }}
+          NODE_CLASH_PORT: ${{ matrix.node.clash_port || 19090 }}
+          NODE_JUMP: ${{ matrix.node.jump || false }}
+          NODE_SSH_RSA: ${{ matrix.node.ssh_rsa || false }}
+          TARGET_TAG: ${{ needs.prepare.outputs.release_tag }}
+          AGENT_SSH_KEYS_JSON: ${{ secrets.AGENT_SSH_KEYS_JSON }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          CR_PAT: ${{ secrets.GHCR_TOKEN || '' }}
+          CR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          install -m 700 -d ~/.ssh
+          jq -r --arg name "${NODE_NAME}" '.[$name] // empty' <<< "${AGENT_SSH_KEYS_JSON}" > ~/.ssh/node_key
+          if [ ! -s ~/.ssh/node_key ]; then
+            echo "Missing SSH private key for node '${NODE_NAME}' in AGENT_SSH_KEYS_JSON" >&2
+            exit 1
+          fi
+          chmod 600 ~/.ssh/node_key
+
+          cat > ~/.ssh/config << EOF
+          Host target
+            HostName ${NODE_HOST}
+            Port ${NODE_PORT}
+            User ${NODE_USER}
+            IdentityFile ~/.ssh/node_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ServerAliveInterval 15
+            ServerAliveCountMax 6
+            ConnectTimeout 15
+          EOF
+
+          if [ "${NODE_SSH_RSA}" = "true" ]; then
+            cat >> ~/.ssh/config << 'EOF'
+            HostKeyAlgorithms +ssh-rsa
+            PubkeyAcceptedAlgorithms +ssh-rsa
+          EOF
+          fi
+
+          if [ "${NODE_JUMP}" = "true" ]; then
+            printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/jump_key
+            chmod 600 ~/.ssh/jump_key
+            cat >> ~/.ssh/config << EOF
+            ProxyJump jump
+
+          Host jump
+            HostName ${DEPLOY_HOST}
+            Port ${DEPLOY_PORT}
+            User ${DEPLOY_USER}
+            IdentityFile ~/.ssh/jump_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ServerAliveInterval 15
+            ServerAliveCountMax 6
+            ConnectTimeout 15
+          EOF
+          fi
+          chmod 600 ~/.ssh/config
+
+          if [ -n "${CR_PAT}" ]; then
+            printf '%s\n' "${CR_PAT}" | ssh target \
+              "docker login ghcr.io -u '${CR_USER}' --password-stdin >/dev/null 2>&1 || true"
+          fi
+
+          echo "Deploying ${TARGET_TAG} to ${NODE_NAME} (${NODE_HOST})..."
+          ssh target sh -s -- "${NODE_DIR}" "${TARGET_TAG}" "${NODE_CLASH_PORT}" << 'EOS'
+            set -eu
+            DEPLOY_DIR="$1"
+            TARGET_TAG="$2"
+            CLASH_PORT="$3"
+
+            cd "${DEPLOY_DIR}"
+
+            COMPOSE_FILE="compose.yaml"
+            if [ ! -f "${COMPOSE_FILE}" ]; then
+              if [ -f "docker-compose.yml" ]; then
+                COMPOSE_FILE="docker-compose.yml"
+              else
+                echo "Missing compose.yaml or docker-compose.yml in ${DEPLOY_DIR}" >&2
+                exit 1
+              fi
+            fi
+
+            set_tag() {
+              tag="$1"
+              touch .env
+              if grep -q '^AETHERGATE_TAG=' .env; then
+                grep -v '^AETHERGATE_TAG=' .env > .env.tmp || true
+                printf 'AETHERGATE_TAG=%s\n' "${tag}" >> .env.tmp
+                mv .env.tmp .env
+              else
+                printf 'AETHERGATE_TAG=%s\n' "${tag}" >> .env
+              fi
+            }
+
+            PREV_TAG="latest"
+            if [ -f .env ]; then
+              PREV_LINE=$(grep '^AETHERGATE_TAG=' .env | tail -n 1 || true)
+              if [ -n "${PREV_LINE}" ]; then
+                PREV_TAG=${PREV_LINE#AETHERGATE_TAG=}
+              fi
+              [ -z "${PREV_TAG}" ] && PREV_TAG="latest"
+            fi
+            echo "Current active tag: ${PREV_TAG}, Target deploy tag: ${TARGET_TAG}"
+
+            # 1. Pre-pull image with retry before touching the running container
+            PULL_OK=0
+            for attempt in 1 2 3; do
+              if AETHERGATE_TAG="${TARGET_TAG}" docker compose -f "${COMPOSE_FILE}" pull aethergate-agent; then
+                PULL_OK=1
+                break
+              fi
+              echo "Image pull attempt ${attempt} failed; retrying in 15s..." >&2
+              sleep 15
+            done
+            if [ "${PULL_OK}" -ne 1 ]; then
+              echo "Failed to pull image ${TARGET_TAG}; keeping existing container untouched." >&2
+              exit 1
+            fi
+
+            # 2. Switch tag and recreate container
+            set_tag "${TARGET_TAG}"
+            echo "Recreating aethergate-agent container..."
+            docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans aethergate-agent
+
+            # 3. Health verification: container must stay running with RestartCount == 0 and Clash API listening
+            echo "Verifying container stability and sing-box Clash API on 127.0.0.1:${CLASH_PORT}..."
+            PROBE_OK=1
+            CLASH_READY=0
+            for i in 1 2 3 4 5; do
+              sleep 4
+              STATE=$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' aethergate-agent 2>/dev/null || echo "false 999")
+              RUNNING=${STATE%% *}
+              RESTARTS=${STATE#* }
+              if [ "${RUNNING}" != "true" ] || [ "${RESTARTS}" != "0" ]; then
+                echo "Container stability check failed at tick ${i}: ${STATE}" >&2
+                PROBE_OK=0
+                break
+              fi
+              if [ "${CLASH_PORT}" != "0" ]; then
+                if curl -s -o /dev/null --connect-timeout 2 "http://127.0.0.1:${CLASH_PORT}/version"; then
+                  CLASH_READY=1
+                fi
+              else
+                CLASH_READY=1
+              fi
+            done
+
+            if [ "${PROBE_OK}" -eq 1 ] && [ "${CLASH_READY}" -eq 1 ]; then
+              echo "Verification succeeded! Pruning unused images..."
+              docker image prune -f >/dev/null 2>&1 || true
+              exit 0
+            fi
+
+            # 4. Rollback on failure
+            echo "Verification failed (PROBE_OK=${PROBE_OK}, CLASH_READY=${CLASH_READY})! Rolling back to ${PREV_TAG}..." >&2
+            set_tag "${PREV_TAG}"
+            docker compose -f "${COMPOSE_FILE}" pull aethergate-agent >/dev/null 2>&1 || true
+            docker compose -f "${COMPOSE_FILE}" up -d aethergate-agent || true
+            echo "=== Container logs (last 60 lines) ===" >&2
+            docker compose -f "${COMPOSE_FILE}" logs --tail=60 aethergate-agent || true
+            exit 1
+          EOS
